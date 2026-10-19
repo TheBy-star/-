@@ -1,0 +1,14 @@
+# 依赖与产物
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 本地截图与临时文件
+*.png.tmp
+screenshot-*.png

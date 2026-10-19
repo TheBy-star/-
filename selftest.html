@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>森林小屋 · 自检</title>
+<style>
+  html,body{margin:0;background:#0d1117;color:#e6edf3;font:13px/1.7 ui-monospace,Consolas,monospace}
+  #wrap{display:flex;height:100vh}
+  #left{flex:0 0 420px;overflow:auto;padding:18px 20px;border-right:1px solid #26303c;background:#0f151c}
+  #right{flex:1;position:relative;background:#000;display:flex;align-items:center;justify-content:center;padding:10px}
+  h1{font-size:15px;margin:0 0 12px;letter-spacing:.08em;color:#c9d6e2;font-weight:400}
+  .row{padding:6px 0;border-bottom:1px solid #1d2630}
+  .k{color:#8b98a6}
+  .ok{color:#4cc38a}
+  .bad{color:#ff7b72}
+  .warn{color:#e3b341}
+  pre{white-space:pre-wrap;word-break:break-word;font-size:12px;color:#aab6c2;background:#0b1117;border-left:2px solid #30363d;padding:10px 12px;border-radius:4px}
+  #scene{width:100%;height:100%;object-fit:contain}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="left">
+    <h1>森林小屋 · 运行自检</h1>
+    <div id="log"></div>
+    <h1 style="margin-top:18px">操作</h1>
+    <div class="row" style="color:#8b98a6">左侧是实时日志，右侧是场景画面。把整页截图发回来即可定位问题。</div>
+  </div>
+  <div id="right"><canvas id="scene"></canvas></div>
+</div>
+<script>
+/* 自检壳：把场景页放进 iframe，抓取其 console 与 error，展示在左侧 */
+const logEl = document.getElementById('log');
+function row(cls, text) {
+  const d = document.createElement('div');
+  d.className = 'row';
+  d.innerHTML = '<span class="' + cls + '">●</span> ' + text;
+  logEl.appendChild(d);
+}
+row('ok', '自检已启动');
+row('warn', '浏览器：' + (navigator.userAgent || '?'));
+/* WebGL2 能力探测 */
+try {
+  const probe = document.createElement('canvas');
+  const g = probe.getContext('webgl2');
+  if (!g) row('bad', 'WebGL2 不可用 → 场景无法运行');
+  else {
+    row('ok', 'WebGL2 可用');
+    const dbg = g.getExtension('WEBGL_debug_renderer_info');
+    row('ok', 'GPU: ' + (dbg ? g.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : g.getParameter(g.RENDERER)));
+    row('ok', 'MaxTextureSize: ' + g.getParameter(g.MAX_TEXTURE_SIZE));
+    row('ok', 'EXT_color_buffer_float: ' + !!g.getExtension('EXT_color_buffer_float'));
+    row('ok', 'MaxVaryingVectors: ' + g.getParameter(g.MAX_VARYING_VECTORS));
+  }
+} catch (e) { row('bad', '探测异常: ' + e.message); }
+
+const frame = document.createElement('iframe');
+frame.src = 'index.html?diag=1';
+frame.style.cssText = 'width:100%;height:100%;border:0;background:#000';
+document.getElementById('right').innerHTML = '';
+document.getElementById('right').appendChild(frame);
+
+(frame.contentWindow || window).addEventListener('error', e => {});
+
+setTimeout(() => {
+  try {
+    const cd = frame.contentDocument;
+    const errBox = cd && cd.getElementById('err');
+    if (errBox && errBox.classList.contains('show')) {
+      row('bad', '检测到错误浮层');
+      const t = cd.getElementById('errtext').textContent;
+      const pre = document.createElement('pre');
+      pre.textContent = t.slice(0, 6000);
+      logEl.appendChild(pre);
+    } else {
+      row('ok', '未检测到错误浮层（若右侧仍是黑屏请截图整页）');
+      const diagEl = cd && cd.getElementById('diag');
+      if (diagEl && diagEl.classList.contains('show')) {
+        const pre = document.createElement('pre');
+        pre.textContent = diagEl.textContent;
+        logEl.appendChild(pre);
+        row('ok', '已读取到场景诊断信息');
+      }
+    }
+  } catch (e) {
+    row('warn', '无法读取 iframe 内容（可能是本地文件跨域限制），请直接截图右侧画面');
+  }
+}, 6000);
+</script>
+</body>
+</html>

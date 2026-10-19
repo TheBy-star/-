@@ -1,0 +1,2609 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>森林小屋 · Forest Cabin</title>
+<style>
+  :root {
+    --ink:#e8e2d6;
+    --card:rgba(10,12,15,0.42);
+    --line:rgba(255,255,255,0.16);
+    --pop:#d8a25a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#bfe4f5; }
+  body { font-family: "Nunito","Segoe UI Rounded","Arial Rounded MT Bold","Microsoft YaHei",sans-serif; color:var(--ink); }
+  #stage { position:fixed; inset:0; width:100%; height:100%; display:block; }
+  #vignette {
+    position:fixed; inset:0; pointer-events:none;
+    background:
+      radial-gradient(ellipse 115% 100% at 50% 46%, rgba(0,0,0,0) 52%, rgba(3,6,9,0.55) 100%);
+    mix-blend-mode:multiply;
+  }
+  #ui {
+    position:fixed; left:0; right:0; bottom:0; padding:24px 30px 26px;
+    display:flex; align-items:flex-end; justify-content:space-between; gap:18px;
+    pointer-events:none;
+    background:linear-gradient(to top, rgba(120,180,210,0.28), rgba(120,180,210,0));
+    transition:opacity .8s ease;
+  }
+  #ui.hide { opacity:0; }
+  #title {
+    pointer-events:none;
+    background:var(--card); border:1px solid var(--line); border-radius:4px;
+    padding:12px 22px 11px; backdrop-filter:blur(8px);
+  }
+  #title h1 {
+    margin:0 0 4px; font-weight:300; font-size:clamp(15px,1.7vw,20px); letter-spacing:.42em;
+    color:var(--ink); text-transform:uppercase;
+  }
+  #title h1 em { font-style:normal; color:var(--pop); }
+  #title p {
+    margin:0; font-size:clamp(9px,.9vw,11px); letter-spacing:.18em; color:rgba(232,226,214,.62);
+    font-weight:300; text-transform:uppercase;
+  }
+  #hint {
+    pointer-events:none; text-align:right; font-size:10.5px; letter-spacing:.06em; line-height:1.9;
+    color:rgba(232,226,214,.55); font-weight:300;
+  }
+  #hint b { font-weight:500; color:var(--pop); }
+  #loader {
+    position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    background:#eaf6fc; transition:opacity 1.1s ease; z-index:20; gap:18px;
+  }
+  #loader.gone { opacity:0; pointer-events:none; }
+  #loader .ring {
+    width:52px; height:52px; border:4px solid rgba(138,90,53,.16);
+    border-top-color:var(--pop); border-radius:50%;
+    animation:spin 1.1s linear infinite;
+  }
+  #loader .lt { font-size:12px; letter-spacing:.24em; color:var(--line); font-weight:700; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  #err {
+    position:fixed; inset:0; display:none; padding:7vh 6vw; z-index:30;
+    background:rgba(8,10,14,.96); overflow:auto;
+    font-family:ui-monospace,Consolas,"Cascadia Mono",monospace; font-size:12.5px; line-height:1.7;
+  }
+  #err.show { display:block; }
+  #err h2 { color:#ff8f7a; font-size:15px; letter-spacing:.1em; margin:0 0 14px; }
+  #err pre { white-space:pre-wrap; word-break:break-word; color:#d9d3c7; background:rgba(255,255,255,.045);
+    border-left:2px solid #ff8f7a; padding:14px 16px; border-radius:4px; margin:0 0 16px; }
+  #err small { display:block; color:#8e9aa4; margin-top:18px; font-size:11.5px; letter-spacing:.06em; }
+  #diag {
+    position:fixed; left:12px; top:12px; z-index:25; display:none;
+    font-family:ui-monospace,Consolas,monospace; font-size:11px; line-height:1.65;
+    color:#cfe8d8; background:rgba(0,0,0,.72); padding:10px 13px; border-radius:5px;
+    border:1px solid rgba(120,200,160,.28); white-space:pre; pointer-events:none;
+  }
+  #diag.show { display:block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="vignette"></div>
+
+<div id="ui">
+  <div id="title">
+    <h1>森 林 小 <em>屋</em></h1>
+    <p>A quiet afternoon, somewhere deep in the woods</p>
+  </div>
+  <div id="hint">
+    拖拽 <b>环视</b> · 滚轮 <b>远近</b> · <b>空格</b> 暂停镜头<br>
+    <b>F</b> 全屏 · <b>H</b> 隐藏界面 · 鼠标静止片刻后自动回到运镜
+  </div>
+</div>
+
+<div id="loader"><div class="ring"></div><div class="lt">正在生成森林</div></div>
+<div id="err"><h2>渲染出错</h2><pre id="errtext"></pre><small>请把这段文字连同浏览器名称一起截图发给开发者。</small></div>
+<div id="diag"></div>
+
+<script>
+"use strict";
+/* ==========================================================================
+   森林小屋 · 零依赖 WebGL2 场景
+   - 不使用任何外部库/CDN/图片：几何体、木纹、树皮、地面、人物全部程序化生成
+   - 全部逻辑集中在本文件，双击即可离线运行
+   ========================================================================== */
+
+/* ---------------------------------- 诊断 ---------------------------------- */
+const QS = new URLSearchParams(location.search);
+const DIAG = !QS.has('nodiag');
+const FREEZE = QS.has('freeze');
+const NOINST = QS.has('noinst');   // 排查用：跳过所有实例化网格（树冠/草）
+const EXPOSURE = QS.has('ev') ? Math.max(0.15, Math.min(3.0, parseFloat(QS.get('ev')) || 1.0)) : 1.0;   // 曝光（可调）
+const NOSHADOW = QS.has('noshadow');   // 排查：关闭阴影
+const NOOUTLINE = !QS.has('outline');   // 描边默认关闭，?outline=1 才开启
+const NOPOST = QS.has('nopost');        // 排查：关闭后期
+const ERRBOX = document.getElementById('err');
+const ERRTEXT = document.getElementById('errtext');
+const DIAGEL = document.getElementById('diag');
+const SHADER_STAGE = { name: '(初始化未完成)' };   // 记录当前着色器阶段，供错误信息定位
+
+function fatal(msg) {
+  ERRTEXT.textContent = String(msg);
+  ERRBOX.classList.add('show');
+  document.getElementById('loader').classList.add('gone');
+  console.error(msg);
+}
+function diag(lines) {
+  if (!DIAG) return;
+  DIAGEL.textContent = Array.isArray(lines) ? lines.join('\n') : lines;
+  DIAGEL.classList.add('show');
+}
+window.addEventListener('error', e => fatal('JS 错误：' + (e.message || e) + '\n' + (e.filename || '') + ':' + (e.lineno || '') + '\n当前着色器阶段：' + SHADER_STAGE.name));
+
+/* ------------------------------- 数学工具库 ------------------------------- */
+const M4 = {
+  ident() { const o = new Float32Array(16); o[0] = o[5] = o[10] = o[15] = 1; return o; },
+  mul(a, b) { // a*b，列主序
+    const o = new Float32Array(16);
+    for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+      o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+    }
+    return o;
+  },
+  perspective(fovy, aspect, near, far) {
+    const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+    const o = new Float32Array(16);
+    o[0] = f / aspect; o[5] = f; o[10] = (far + near) * nf; o[11] = -1; o[14] = 2 * far * near * nf;
+    return o;
+  },
+  ortho(l, r, b, t, n, f) {
+    const o = new Float32Array(16);
+    o[0] = 2 / (r - l); o[5] = 2 / (t - b); o[10] = -2 / (f - n); o[15] = 1;
+    o[12] = -(r + l) / (r - l); o[13] = -(t + b) / (t - b); o[14] = -(f + n) / (f - n);
+    return o;
+  },
+  lookAt(eye, center, up) {
+    let zx = eye[0] - center[0], zy = eye[1] - center[1], zz = eye[2] - center[2];
+    let l = Math.hypot(zx, zy, zz) || 1; zx /= l; zy /= l; zz /= l;
+    let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
+    l = Math.hypot(xx, xy, xz) || 1; xx /= l; xy /= l; xz /= l;
+    const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+    const o = new Float32Array(16);
+    o[0] = xx; o[1] = yx; o[2] = zx; o[3] = 0;
+    o[4] = xy; o[5] = yy; o[6] = zy; o[7] = 0;
+    o[8] = xz; o[9] = yz; o[10] = zz; o[11] = 0;
+    o[12] = -(xx * eye[0] + xy * eye[1] + xz * eye[2]);
+    o[13] = -(yx * eye[0] + yy * eye[1] + yz * eye[2]);
+    o[14] = -(zx * eye[0] + zy * eye[1] + zz * eye[2]);
+    o[15] = 1;
+    return o;
+  },
+  trs(t, rotXYZ, s) {
+    const [rx, ry, rz] = rotXYZ, [sx, sy, sz] = s;
+    const cx = Math.cos(rx), sxr = Math.sin(rx), cy = Math.cos(ry), syr = Math.sin(ry), cz = Math.cos(rz), szr = Math.sin(rz);
+    // R = Rz * Ry * Rx
+    const m = new Float32Array(16);
+    const r00 = cz * cy, r01 = cz * syr * sxr - szr * cx, r02 = cz * syr * cx + szr * sxr;
+    const r10 = szr * cy, r11 = szr * syr * sxr + cz * cx, r12 = szr * syr * cx - cz * sxr;
+    const r20 = -syr, r21 = cy * sxr, r22 = cy * cx;
+    m[0] = r00 * sx; m[1] = r10 * sx; m[2] = r20 * sx; m[3] = 0;
+    m[4] = r01 * sy; m[5] = r11 * sy; m[6] = r21 * sy; m[7] = 0;
+    m[8] = r02 * sz; m[9] = r12 * sz; m[10] = r22 * sz; m[11] = 0;
+    m[12] = t[0]; m[13] = t[1]; m[14] = t[2]; m[15] = 1;
+    return m;
+  },
+  translate(x, y, z) { return M4.trs([x, y, z], [0, 0, 0], [1, 1, 1]); },
+  scaleMat(x, y, z) { return M4.trs([0, 0, 0], [0, 0, 0], [x, y, z]); },
+  normalMat34(m) {
+    // 取左上 3x3 的逆转置（仅用于均匀缩放，简化为直接取）
+    const o = new Float32Array(9);
+    o[0] = m[0]; o[1] = m[1]; o[2] = m[2];
+    o[3] = m[4]; o[4] = m[5]; o[5] = m[6];
+    o[6] = m[8]; o[7] = m[9]; o[8] = m[10];
+    return o;
+  }
+};
+const V3 = {
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+  mul: (a, s) => [a[0] * s, a[1] * s, a[2] * s],
+  norm(a) { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; },
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  len: a => Math.hypot(a[0], a[1], a[2]),
+  lerp: (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+};
+
+/* 确定性伪随机 */
+let _seed = 20261019;
+function rnd() { _seed = (_seed * 1664525 + 1013904223) % 4294967296; return _seed / 4294967296; }
+function rr(a, b) { return a + (b - a) * rnd(); }
+function pick(arr) { return arr[Math.floor(rnd() * arr.length) % arr.length]; }
+
+/* 简单值噪声（CPU 侧，供地形与散布使用） */
+function hash2(x, y) { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); }
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = hash2(xi, yi), b = hash2(xi + 1, yi), c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
+}
+function fbm(x, y, oct = 4) {
+  let s = 0, amp = 0.5, f = 1;
+  for (let i = 0; i < oct; i++) { s += amp * vnoise(x * f, y * f); f *= 2.03; amp *= 0.5; }
+  return s;
+}
+
+/* ================================ GL 上下文 ================================ */
+const canvas = document.getElementById('stage');
+const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, powerPreference: 'high-performance' });
+if (!gl) { fatal('当前浏览器不支持 WebGL2。请使用新版 Chrome / Edge / Firefox / Safari 打开。'); throw new Error('no webgl2'); }
+
+const glInfo = [
+  'WebGL2 OK',
+  'Renderer: ' + (gl.getParameter(gl.RENDERER) || '?'),
+  'Vendor: ' + (gl.getParameter(gl.VENDOR) || '?'),
+  'MaxTexture: ' + gl.getParameter(gl.MAX_TEXTURE_SIZE),
+  'MaxVarying: ' + gl.getParameter(gl.MAX_VARYING_VECTORS),
+  'FloatRT: ' + !!gl.getExtension('EXT_color_buffer_float')
+];
+diag(glInfo);
+
+/* ------------------------------ 着色器编译 ------------------------------ */
+function compile(type, src, name) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s) || '(驱动未返回日志)';
+    const stage = (type === gl.VERTEX_SHADER) ? 'VERTEX' : 'FRAGMENT';
+    const numbered = src.split('\n').map((l, i) => String(i + 1).padStart(3, ' ') + ' | ' + l).join('\n');
+    const msg = '【' + name + ' · ' + stage + ' 着色器编译失败】\n驱动日志：' + log +
+      '\n\n—— 源码（行号对应日志里的数字）——\n' + numbered;
+    console.error(msg);
+    // 直接在页面上读出来，避免只看到"渲染出错"四个字
+    document.getElementById('errtext').textContent = msg;
+    document.getElementById('err').classList.add('show');
+    throw new Error(msg);
+  }
+  return s;
+}
+function program(name, vsSrc, fsSrc) {
+  SHADER_STAGE.name = name;
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc, name + '.vs'));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc, name + '.fs'));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('[' + name + '] 链接失败:\n' + (gl.getProgramInfoLog(p) || ''));
+  const uniforms = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) {
+    const info = gl.getActiveUniform(p, i);
+    const nm = info.name.replace(/\[0\]$/, '');
+    uniforms[nm] = gl.getUniformLocation(p, info.name);
+  }
+  return { p, uniforms, name };
+}
+
+/* ------------------------------ 公共 GLSL ------------------------------ */
+const GLSL_COMMON = `
+precision highp float;
+const float PI = 3.14159265359;
+float sat(float x){ return clamp(x, 0.0, 1.0); }
+vec3 sat3(vec3 x){ return clamp(x, 0.0, 1.0); }
+float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float hash13(vec3 p3){ p3 = fract(p3 * 0.1031); p3 += dot(p3, p3.zyx + 31.32); return fract((p3.x + p3.y) * p3.z); }
+float vnoise2(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = hash12(i), b = hash12(i + vec2(1.0,0.0)), c = hash12(i + vec2(0.0,1.0)), d = hash12(i + vec2(1.0,1.0));
+  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+}
+float fbm2(vec2 p){
+  float s = 0.0, a = 0.5;
+  for (int i = 0; i < 5; i++){ s += a * vnoise2(p); p = p * 2.03 + 17.1; a *= 0.5; }
+  return s;
+}
+float fbm3(vec3 p){
+  float s = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++){ s += a * (hash13(floor(p)) * 0.35 + vnoise2(p.xz + p.y * 1.7) * 0.65); p = p * 2.01 + 11.3; a *= 0.5; }
+  return s;
+}
+vec3 aces(vec3 x){
+  const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+  return sat3((x * (a * x + b)) / (x * (c * x + d) + e));
+}
+`;
+
+/* 法线扰动：用程序噪声从世界坐标推导数，避免需要切线 */
+const GLSL_BUMP = `
+vec3 bumpNormal(vec3 n, vec3 worldPos, float scale, float strength){
+  float e = 0.045;
+  float h0 = fbm3(worldPos * scale);
+  float hx = fbm3((worldPos + vec3(e, 0.0, 0.0)) * scale);
+  float hy = fbm3((worldPos + vec3(0.0, e, 0.0)) * scale);
+  float hz = fbm3((worldPos + vec3(0.0, 0.0, e)) * scale);
+  vec3 g = vec3(hx - h0, hy - h0, hz - h0) / e;
+  vec3 t1 = normalize(cross(n, vec3(0.0, 1.0, 0.001)));
+  vec3 t2 = normalize(cross(n, t1));
+  vec3 bumped = normalize(n - (g.x * t1 + g.y * t2) * strength);
+  return bumped;
+}
+`;
+
+/* 局部坐标噪声（用于木头年轮：用 objectPos） */
+const GLSL_WOOD = `
+vec3 woodAlbedo(vec3 p, vec3 n, float seed){
+  float g = fbm2(vec2(p.x * 6.0 + p.z * 6.0, seed * 13.0));
+  float rings = sin((p.y * 9.0 + g * 3.2) * 3.14159) * 0.5 + 0.5;
+  rings = pow(rings, 1.6);
+  vec3 dark = vec3(0.145, 0.096, 0.060);
+  vec3 mid  = vec3(0.335, 0.225, 0.140);
+  vec3 lite = vec3(0.505, 0.362, 0.228);
+  vec3 c = mix(dark, mid, rings);
+  c = mix(c, lite, smoothstep(0.72, 1.0, rings) * 0.75);
+  float grain = fbm2(vec2(p.x * 40.0 + p.z * 40.0, p.y * 3.0));
+  c *= 0.86 + 0.28 * grain;
+  float weather = fbm2(vec2(p.x * 2.0, p.y * 2.0));
+  c = mix(c, vec3(0.30, 0.27, 0.235), smoothstep(0.55, 0.95, weather) * 0.22);
+  return c;
+}
+`;
+
+/* ============================== 阴影深度 Pass（支持实例化） ============================== */
+const progShadow = program('shadow',
+`#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNrm;
+layout(location=2) in vec2 aUV;
+layout(location=3) in vec3 aObj;
+layout(location=5) in mat4 aInst;
+uniform mat4 uModel, uViewProj;
+uniform int uInstanced;
+void main(){
+  vec4 p = vec4(aPos, 1.0);
+  if (uInstanced == 1) p = aInst * p;
+  gl_Position = uViewProj * uModel * p;
+}`,
+`#version 300 es
+precision mediump float;
+out vec4 o;
+void main(){ o = vec4(1.0); }`);
+
+/* ============================ 主材质 Pass（HDR） ============================ */
+const progMain = program('main',
+`#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNrm;
+layout(location=2) in vec2 aUV;
+layout(location=3) in vec3 aObj;
+layout(location=4) in vec3 aCol;
+layout(location=5) in mat4 aInst;
+uniform mat4 uModel, uViewProj, uLightVP;
+uniform int uInstanced, uUseColor, uSway;
+uniform float uTime;
+out vec3 vWorld, vNrm, vCol, vLight;
+out vec2 vUV;
+void main(){
+  vec4 p = vec4(aPos, 1.0);
+  mat4 m = uModel;
+  if (uInstanced == 1) {
+    m = uModel * aInst;
+    if (uSway == 1) {
+      float ph = aInst[3].x * 0.37 + aInst[3].z * 0.29;
+      float sw = sin(uTime * 1.25 + ph) * 0.035 + sin(uTime * 2.7 + ph * 1.7) * 0.014;
+      p.x += sw * aPos.y * 0.5;
+      p.z += sw * 0.6 * aPos.y * 0.5;
+    }
+  }
+  vec4 wp = m * p;
+  vWorld = wp.xyz;
+  vNrm = normalize(mat3(m) * aNrm);
+  vCol = aCol;
+  vUV = aUV;
+  vLight = (uLightVP * wp).xyz * 0.5 + 0.5;
+  gl_Position = uViewProj * wp;
+}`,
+`#version 300 es
+${GLSL_COMMON}
+${GLSL_BUMP}
+${GLSL_WOOD}
+in vec3 vWorld, vNrm, vCol, vLight;
+in vec2 vUV;
+uniform int uMat;
+uniform float uTime;
+uniform sampler2D uShadow;
+uniform float uShadowOn;
+uniform vec3 uSunDir, uSunColor, uCamPos;
+uniform float uShadowTexel;
+uniform vec3 uLampPos, uLampColor;
+uniform vec3 uWinPos, uWinColor;
+uniform vec3 uFogColor;
+uniform float uFogDensity;
+out vec4 outColor;
+
+vec3 matAlbedo(vec3 n, vec3 wp, vec3 op, vec2 uv){
+  if (uMat == 0) {                       // 木材：偏冷的灰褐，靠明暗而不是靠饱和度出质感
+    float stripe = abs(fract(op.y * 3.1) - 0.5) * 2.0;
+    float seam = smoothstep(0.82, 1.0, stripe);
+    float grain = 0.92 + 0.12 * sin(op.y * 19.0 + op.x * 4.3);
+    vec3 base = mix(vec3(0.62, 0.46, 0.32), vec3(0.74, 0.57, 0.40), grain);
+    return mix(base, vec3(0.40, 0.28, 0.19), seam * 0.70);
+  }
+  if (uMat == 1) {                       // 石头：冷灰，带极淡的色差
+    float cell = fbm3(op * 2.4);
+    float edge = smoothstep(0.34, 0.52, cell);
+    return mix(vec3(0.84, 0.83, 0.80), vec3(0.72, 0.71, 0.69), edge * 0.75);
+  }
+  if (uMat == 2) {                       // 树皮：深褐
+    float st = abs(fract(atan(op.z, op.x) * 2.6) - 0.5) * 2.0;
+    return mix(vec3(0.42, 0.32, 0.23), vec3(0.32, 0.24, 0.18), smoothstep(0.55, 1.0, st) * 0.6);
+  }
+  if (uMat == 3) {                       // 地面：低饱和苔绿与土色交错
+    float patchv = fbm2(op.xz * 0.55);
+    float dotm = smoothstep(0.70, 0.88, fbm2(op.xz * 8.0));
+    vec3 c = mix(vec3(0.36, 0.42, 0.27), vec3(0.28, 0.34, 0.22), smoothstep(0.42, 0.82, patchv));
+    c = mix(c, vec3(0.40, 0.34, 0.25), dotm * 0.55);       // 反光的枯土
+    return c;
+  }
+  if (uMat == 4) return vCol;            // 树叶
+  if (uMat == 5) return vCol;            // 布料 / 皮肤
+  if (uMat == 6) return vec3(0.88, 0.86, 0.80);   // 书页（微暖）
+  if (uMat == 7) return vec3(1.0, 0.74, 0.40) * 2.4;  // 灯罩自发光
+  if (uMat == 8) {                       // 小径：偏冷的沙土
+    float d = fbm2(op.xz * 3.0);
+    return mix(vec3(0.56, 0.48, 0.38), vec3(0.68, 0.59, 0.47), d);
+  }
+  return vCol;
+}
+
+float shadowSample(vec3 ln, float ndl){
+  if (uShadowOn < 0.5) return 1.0;
+  vec3 suvw = ln;
+  float b = (1.0 - ndl) * 0.006 + 0.0016;
+  float texel = uShadowTexel * b;
+  float lit = 0.0;
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      float d = texture(uShadow, suvw.xy + vec2(float(x), float(y)) * texel).r;
+      lit += step(suvw.z - 0.0032, d);
+    }
+  }
+  return lit / 9.0;
+}
+
+void main(){
+  vec3 N = normalize(vNrm);
+  vec3 V = normalize(uCamPos - vWorld);
+  if (dot(N, V) < 0.0) N = -N;
+  vec3 alb = matAlbedo(N, vWorld, vWorld * 1.6, vUV);
+
+  float ndl = dot(N, uSunDir);
+  float sh = 0.0;
+  if (ndl > 0.0) sh = shadowSample(vLight, max(ndl, 0.0));
+
+  // ===== 电影感光照：只保留 2~3 个柔和层次，不再硬切 =====
+  // 主光（暖）强度高、衰减明确；阴影区靠冷色环境光和冷补光托住
+  float lam = clamp(ndl * 0.5 + 0.5, 0.0, 1.0);
+  // 用 smoothstep 做柔和过渡（不是硬边），形成"受光面 / 过渡 / 暗面"三段
+  float toon = mix(0.78, 1.0, smoothstep(0.28, 0.62, lam));
+  toon = mix(toon, 1.12, smoothstep(0.64, 0.88, lam));
+  float shadowMask = mix(0.86, 1.0, sh);
+  if (uMat == 5) shadowMask = 1.0;   // 人物不参与阴影计算，避免脸部出现黑斑
+  float keyLit = toon * shadowMask;
+
+  // 天空散射（冷）与地面反弹（暖褐）
+  vec3 skyAmb  = vec3(0.26, 0.34, 0.44);
+  vec3 gndAmb  = vec3(0.26, 0.22, 0.17);
+  float up = N.y * 0.5 + 0.5;
+  vec3 ambient = mix(gndAmb, skyAmb, up) * 0.66;
+
+  // 冷色补光：从主光反侧上方压过来，给暗面留出冷色边缘
+  vec3 fillDir = normalize(vec3(-uSunDir.x, 0.42, -uSunDir.z));
+  float ndlFill = max(dot(N, fillDir), 0.0);
+  vec3 fillLight = vec3(0.44, 0.58, 0.82) * ndlFill * 0.18;
+
+  vec3 col = alb * (ambient + fillLight + uSunColor * keyLit * 0.62);
+
+  // 轮廓光：逆光常在边缘形成一道亮线，强化主体与背景分离
+  float rim = pow(1.0 - max(dot(N, V), 0.0), 4.0);
+  float rimSun = pow(max(dot(-V, uSunDir), 0.0), 1.5);
+  col += uSunColor * rim * rimSun * 0.10 * sh;
+
+  // 窗内暖光（点光源衰减）
+  vec3 Lw = uWinPos - vWorld; float dw = length(Lw); Lw /= max(dw, 0.0001);
+  col += alb * uWinColor * (1.0 / (1.0 + dw * dw * 0.10)) * (max(dot(N, Lw), 0.0) * 0.8 + 0.2) * 0.55;
+
+  // 门廊灯笼（更小更实的暖光）
+  vec3 Ll = uLampPos - vWorld; float dl = length(Ll); Ll /= max(dl, 0.0001);
+  col += alb * uLampColor * (1.0 / (1.0 + dl * dl * 0.55)) * (max(dot(N, Ll), 0.0) * 0.8 + 0.2) * 0.85;
+
+  if (uMat == 7) col = alb;
+
+  // ===== 空气透视：近处清晰、远处压暗并偏冷，形成纵深 =====
+  float dist = length(uCamPos - vWorld);
+  float fogAmt = 1.0 - exp(-dist * uFogDensity);
+  float heightFade = exp(-max(vWorld.y - 0.2, 0.0) * 0.55);
+  fogAmt = clamp(fogAmt * (0.55 + 0.75 * heightFade), 0.0, 0.94);
+  vec3 fogCol = mix(uFogColor, vec3(0.60, 0.68, 0.74), 0.30);
+  col = mix(col, fogCol, fogAmt);
+
+  // 暗角式边缘压暗（材质层面再做一次，增强镜头感）
+  col *= 1.0 - fogAmt * 0.18;
+
+  outColor = vec4(col, 1.0);
+}`);
+
+/* =============================== 天空 =============================== */
+const progSky = program('sky',
+`#version 300 es
+layout(location=0) in vec2 aPos;
+out vec2 vUV;
+void main(){ vUV = aPos; gl_Position = vec4(aPos, 0.999, 1.0); }`,
+`#version 300 es
+${GLSL_COMMON}
+in vec2 vUV;
+uniform vec2 uRes;
+uniform vec3 uCamDir, uCamUp, uCamRight;
+uniform vec3 uSunDir, uSunColor;
+uniform float uTime;
+uniform vec3 uFogColor;
+out vec4 o;
+
+void main(){
+  float aspect = uRes.x / uRes.y;
+  float fovScale = 0.62;
+  vec3 dir = normalize(uCamDir + uCamRight * (vUV.x * aspect * fovScale) + uCamUp * (vUV.y * fovScale));
+  float h = clamp(dir.y, -1.0, 1.0);
+  float t = clamp(h, 0.0, 1.0);
+
+  // ===== 电影感天空：低亮度、深蓝灰天顶，地平线留一层暖色余晖 =====
+  vec3 horizon = vec3(0.52, 0.48, 0.40);      // 尘灰色地平线
+  vec3 midSky  = vec3(0.26, 0.34, 0.44);      // 青灰中层
+  vec3 zenith  = vec3(0.12, 0.18, 0.27);      // 深蓝灰天顶
+  vec3 col = mix(horizon, midSky, smoothstep(0.0, 0.30, t));
+  col = mix(col, zenith, smoothstep(0.26, 0.95, t));
+
+  // 层积云：柔边、有厚度、贴近地平线
+  vec2 cp = dir.xz / max(t + 0.20, 0.05);
+  float base = fbm2(cp * 0.70 + vec2(uTime * 0.003, uTime * 0.0015));
+  float puff = fbm2(cp * 1.45 - vec2(uTime * 0.004, 0.0));
+  float cl = smoothstep(0.42, 0.72, base * 0.72 + puff * 0.42);
+  float band = smoothstep(0.02, 0.16, t) * (1.0 - smoothstep(0.42, 0.80, t));
+  vec3 cloudDark = vec3(0.18, 0.20, 0.24);
+  vec3 cloudLite = vec3(0.52, 0.50, 0.47);
+  vec3 cloudCol = mix(cloudDark, cloudLite, smoothstep(0.1, 0.75, t));
+  col = mix(col, cloudCol, cl * band * 0.9);
+
+  // 太阳：核小、光晕大而柔，作为逆光光源
+  float sd = max(dot(dir, uSunDir), 0.0);
+  float disk = smoothstep(0.9975, 0.9992, sd);
+  col += vec3(1.0, 0.86, 0.62) * disk * 3.2;
+  col += uSunColor * pow(sd, 26.0) * 0.42;
+  col += uSunColor * pow(sd, 6.0) * 0.14;
+
+  // 地平线与雾同色，让天际线自然消失在空气里
+  col = mix(col, uFogColor * 1.05, smoothstep(0.16, -0.12, h) * 0.95);
+  o = vec4(col, 1.0);
+}`);
+
+/* ============================ 植被（实例化 + 风） ============================ */
+const progFoliage = program('foliage',
+`#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNrm;
+layout(location=2) in vec2 aUV;
+layout(location=3) in vec3 aObj;
+layout(location=4) in vec3 aCol;
+layout(location=5) in mat4 aInst;
+uniform mat4 uModel, uViewProj, uLightVP;
+uniform float uTime;
+uniform int uInstanced;
+out vec3 vWorld, vNrm, vCol, vLight;
+void main(){
+  vec4 p = vec4(aPos, 1.0);
+  mat4 m = uModel;
+  if (uInstanced == 1) {
+    m = uModel * aInst;
+    float ph = aInst[3].x * 0.41 + aInst[3].z * 0.33;
+    float sway = sin(uTime * 1.6 + ph) * 0.055 + sin(uTime * 3.1 + ph * 1.7) * 0.022;
+    p.x += sway * aPos.y;
+    p.z += sway * 0.6 * aPos.y;
+  }
+  vec4 wp = m * p;
+  vWorld = wp.xyz;
+  vNrm = normalize(mat3(m) * aNrm);
+  vCol = aCol;
+  vLight = (uLightVP * wp).xyz * 0.5 + 0.5;
+  gl_Position = uViewProj * wp;
+}`,
+`#version 300 es
+${GLSL_COMMON}
+in vec3 vWorld, vNrm, vCol, vLight;
+uniform sampler2D uShadow;
+uniform float uShadowOn;
+uniform vec3 uSunDir, uSunColor, uCamPos, uFogColor, uWinPos, uWinColor;
+uniform float uShadowTexel, uTime, uFogDensity, uTranslucency;
+out vec4 o;
+void main(){
+  vec3 N = normalize(vNrm);
+  vec3 V = normalize(uCamPos - vWorld);
+  if (dot(N, V) < 0.0) N = -N;
+  float ndl = max(dot(N, uSunDir), 0.0);
+  vec3 ln = vLight;
+  float b = (1.0 - ndl) * 0.006 + 0.0016;
+  float texel = uShadowTexel * b;
+  float lit = 1.0;
+  if (uShadowOn > 0.5) {
+  lit = 0.0;
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++){
+    lit += step(ln.z - 0.0016, texture(uShadow, ln.xy + vec2(float(x), float(y)) * texel).r);
+  }
+  lit /= 9.0;
+  }
+  vec3 alb = vCol;
+  float up = N.y * 0.5 + 0.5;
+  vec3 amb = mix(vec3(0.10, 0.09, 0.065), vec3(0.28, 0.42, 0.60), up) * 0.62;
+  vec3 col = alb * (amb + uSunColor * ndl * lit * 3.0);
+  // 叶片透光（次表面近似）
+  float trans = pow(max(dot(-V, uSunDir), 0.0), 2.0);
+  col += alb * uSunColor * trans * lit * uTranslucency;
+  // 近处暖光
+  vec3 Lw = uWinPos - vWorld; float dw = length(Lw); Lw /= max(dw, 0.0001);
+  col += alb * uWinColor * (1.0 / (1.0 + dw * dw * 0.075)) * 1.4;
+  float dist = length(uCamPos - vWorld);
+  float fogAmt = 1.0 - exp(-dist * uFogDensity);
+  col = mix(col, uFogColor, fogAmt * 0.9);
+  o = vec4(col, 1.0);
+}`);
+
+/* ============================ 粒子（萤火 / 尘埃） ============================ */
+const progParticles = program('particles',
+`#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aColor;
+layout(location=2) in vec4 aMeta; // size, phase, speed, type
+uniform mat4 uViewProj;
+uniform vec3 uCamPos;
+uniform float uTime, uPixelScale;
+out vec3 vColor;
+out float vAlpha;
+out float vType;
+void main(){
+  float t = uTime * aMeta.z + aMeta.y;
+  vec3 p = aPos;
+  p.x += sin(t * 0.9 + aMeta.y * 7.0) * 0.55;
+  p.y += sin(t * 0.7 + aMeta.y * 3.1) * 0.42;
+  p.z += cos(t * 0.8 + aMeta.y * 5.3) * 0.55;
+  float pulse = 0.55 + 0.45 * sin(t * 2.1 + aMeta.y * 11.0);
+  float blink = smoothstep(0.35, 1.0, pulse);
+  vColor = aColor;
+  vType = aMeta.w;
+  float edge = 1.0 - smoothstep(9.0, 22.0, length(p - uCamPos));
+  vAlpha = (aMeta.w > 0.5 ? blink : 0.55 + 0.45 * sin(t * 0.6)) * edge;
+  vec4 cp = uViewProj * vec4(p, 1.0);
+  gl_Position = cp;
+  float sizePx = aMeta.x * uPixelScale / max(cp.w, 0.2);
+  gl_PointSize = clamp(sizePx, 1.0, 42.0) * (0.7 + 0.5 * pulse);
+  if (cp.w <= 0.05) { gl_PointSize = 0.0; }
+}`,
+`#version 300 es
+precision highp float;
+in vec3 vColor;
+in float vAlpha;
+in float vType;
+uniform float uTime;
+out vec4 o;
+void main(){
+  vec2 c = gl_PointCoord * 2.0 - 1.0;
+  float r2 = dot(c, c);
+  if (r2 > 1.0) discard;
+  float core = exp(-r2 * 7.5);
+  float halo = exp(-r2 * 2.2) * 0.55;
+  float glow = core + halo;
+  vec3 col = vColor * glow;
+  if (vType > 0.5) col = mix(vec3(1.0, 0.82, 0.45), vColor, 0.45) * glow * 1.9;
+  o = vec4(col * vAlpha, 1.0);
+}`);
+
+/* ============================== 后期处理 ============================== */
+const progBright = program('bright',
+`#version 300 es
+layout(location=0) in vec2 aPos; out vec2 vUV;
+void main(){ vUV = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }`,
+`#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uTexel;
+uniform float uThreshold, uKnee;
+out vec4 o;
+void main(){
+  vec3 c = vec3(0.0);
+  c += texture(uTex, vUV + vec2(-1.0,-1.0) * uTexel).rgb;
+  c += texture(uTex, vUV + vec2( 1.0,-1.0) * uTexel).rgb;
+  c += texture(uTex, vUV + vec2(-1.0, 1.0) * uTexel).rgb;
+  c += texture(uTex, vUV + vec2( 1.0, 1.0) * uTexel).rgb;
+  c *= 0.25;
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float soft = smoothstep(uThreshold - uKnee, uThreshold + uKnee, l);
+  o = vec4(c * soft, 1.0);
+}`);
+
+const progBlur = program('blur',
+`#version 300 es
+layout(location=0) in vec2 aPos; out vec2 vUV;
+void main(){ vUV = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }`,
+`#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uDir;
+uniform vec2 uTexel;
+out vec4 o;
+void main(){
+  vec3 sum = texture(uTex, vUV).rgb * 0.227027;
+  sum += texture(uTex, vUV + uDir * uTexel * 1.384615).rgb * 0.316216;
+  sum += texture(uTex, vUV - uDir * uTexel * 1.384615).rgb * 0.316216;
+  sum += texture(uTex, vUV + uDir * uTexel * 3.230769).rgb * 0.070270;
+  sum += texture(uTex, vUV - uDir * uTexel * 3.230769).rgb * 0.070270;
+  o = vec4(sum, 1.0);
+}`);
+
+const progComposite = program('composite',
+`#version 300 es
+layout(location=0) in vec2 aPos; out vec2 vUV;
+void main(){ vUV = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }`,
+`#version 300 es
+${GLSL_COMMON}
+in vec2 vUV;
+uniform sampler2D uScene, uBloom;
+uniform vec2 uRes;
+uniform float uTime, uExposure, uBloomStrength, uVignette, uGrain, uGradeCool, uGradeWarm;
+uniform vec3 uSunColor;
+out vec4 o;
+
+// ACES 近似色调映射：保住中间调亮度与色彩，高光平滑压缩
+vec3 acesLocal(vec3 x){
+  const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+void main(){
+  vec2 uv = vUV;
+  vec3 scene = texture(uScene, uv).rgb;
+  vec3 bloom = texture(uBloom, uv).rgb;
+
+  // 泛光只叠加到亮部，避免整幅发灰
+  float bl = dot(bloom, vec3(0.2126, 0.7152, 0.0722));
+  vec3 col = scene + bloom * uBloomStrength * smoothstep(0.05, 0.55, bl);
+
+  // 关键：先把 HDR 压进 ACES 的线性区间，否则受光面会被压成死白
+  // （实测受光面 ~0.42、阴影 ~0.085，ACES 在 0.6 处即饱和，必须整体缩放）
+  const float HDR_SCALE = 0.70;
+  col *= uExposure * HDR_SCALE;
+
+  // ACES 色调映射：在正确区间内它会给出平滑的高光滚降与真实的中间调
+  col = acesLocal(col);
+
+  // ===== 青橙分离：暗部推青、亮部推橙（幅度收敛，避免整体发灰） =====
+  float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  float split = smoothstep(0.10, 0.80, lum);
+  vec3 tint = mix(vec3(0.94, 1.00, 1.04), vec3(1.03, 0.99, 0.94), split);
+  col *= tint;
+
+  // 中间调托起：让木屋与人物"从背景里浮出来"，同时保留暗部
+  col = col * 1.02 + vec3(0.004, 0.005, 0.006);
+  // 暗部抬底（黑不死，才有体积感），亮部轻压
+  col = max(col, vec3(0.018, 0.020, 0.024));
+  col = mix(col, col * 0.97, smoothstep(0.86, 1.0, lum));
+
+  // 对比曲线：减弱到 0.18，保留层次但不把中调压回去
+  col = clamp(col, 0.0, 1.0);
+  col = mix(col, col * col * (3.0 - 2.0 * col), 0.18);
+
+  // 极轻暗角，模拟镜头
+  vec2 d = (uv - 0.5) * vec2(uRes.x / uRes.y, 1.0);
+  float vig = 1.0 - smoothstep(0.42, 1.35, length(d));
+  col *= mix(1.0, vig, uVignette);
+
+  // 胶片颗粒
+  float g = hash12(uv * uRes + fract(uTime * 0.6) * 431.0) - 0.5;
+  col += g * uGrain * (1.0 - lum * 0.6);
+
+  o = vec4(clamp(col, 0.0, 1.0), 1.0);
+}`);
+
+/* ============================== 卡通描边 Pass ============================== */
+const progOutline = program('outline',
+`#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNrm;
+layout(location=5) in mat4 aInst;
+uniform mat4 uModel, uViewProj;
+uniform int uInstanced;
+uniform float uWidth;      // 每个面的纵向纹理坐标单位（约等于半个像素对应的 NDC）
+uniform vec3 uCamPos;
+void main(){
+  vec4 p = vec4(aPos, 1.0);
+  vec3 nLocal = aNrm;
+  mat4 fullModel = uModel;
+  if (uInstanced == 1) {
+    p = aInst * p;
+    fullModel = uModel * aInst;
+  }
+  vec4 wp = uModel * p;
+  mat3 nm = mat3(fullModel[0].xyz, fullModel[1].xyz, fullModel[2].xyz);
+  vec3 nWorld = normalize(nm * nLocal);
+
+  vec4 cp = uViewProj * wp;
+  // 屏幕等宽描边：沿视空间中投影后的法线方向外扩，
+  // 用裁剪空间 w 归一化，保证不论远近都只占固定的屏幕像素宽度。
+  vec4 nClip = uViewProj * vec4(nWorld, 0.0);
+  vec2 dir = nClip.xy;
+  float len = length(dir);
+  if (len > 1e-5) dir /= len; else dir = vec2(0.0);
+  // w 越大（越远）需要的 NDC 偏移越小，除以 w 后即得到恒定像素宽度
+  cp.xy += dir * uWidth * cp.w;
+  gl_Position = cp;
+}`,
+`#version 300 es
+precision highp float;
+out vec4 o;
+void main(){ o = vec4(0.10, 0.08, 0.07, 1.0); }`);
+
+const progRays = program('rays',
+`#version 300 es
+layout(location=0) in vec2 aPos; out vec2 vUV;
+void main(){ vUV = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }`,
+`#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uSunUV;
+uniform float uAspect;
+uniform vec3 uSunColor;
+out vec4 o;
+void main(){
+  vec2 delta = (vUV - uSunUV);
+  vec2 stepv = delta / 34.0;
+  vec2 coord = vUV;
+  vec3 sum = vec3(0.0);
+  float decay = 1.0;
+  for (int i = 0; i < 34; i++){
+    coord -= stepv;
+    vec3 s = texture(uTex, clamp(coord, vec2(0.001), vec2(0.999))).rgb;
+    float lum = dot(s, vec3(0.2126, 0.7152, 0.0722));
+    float m = smoothstep(1.05, 2.6, lum);
+    sum += s * m * decay;
+    decay *= 0.955;
+  }
+  o = vec4(sum / 34.0 * uSunColor, 1.0);
+}`);
+
+/* ============================== 几何构建器 ============================== */
+function MB() {
+  return { p: [], n: [], u: [], o: [], c: [], i: [] };
+}
+/* 把一段几何（含局部变换 m 与顶点色 col）并入 MB；objScale 用于对象空间噪声频率 */
+function addGeo(mb, gm, m, col, objScale = 1.5) {
+  const base = mb.p.length / 3;
+  const nm = M4.normalMat34(m);
+  const { pos, nrm, uv } = gm;
+  for (let i = 0; i < pos.length; i += 3) {
+    const x = pos[i], y = pos[i + 1], z = pos[i + 2];
+    const wx = m[0] * x + m[4] * y + m[8] * z + m[12];
+    const wy = m[1] * x + m[5] * y + m[9] * z + m[13];
+    const wz = m[2] * x + m[6] * y + m[10] * z + m[14];
+    mb.p.push(wx, wy, wz);
+    let nx = nm[0] * nrm[i] + nm[3] * nrm[i + 1] + nm[6] * nrm[i + 2];
+    let ny = nm[1] * nrm[i] + nm[4] * nrm[i + 1] + nm[7] * nrm[i + 2];
+    let nz = nm[2] * nrm[i] + nm[5] * nrm[i + 1] + nm[8] * nrm[i + 2];
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    mb.n.push(nx / nl, ny / nl, nz / nl);
+    if (uv) mb.u.push(uv[i], uv[i + 1]); else mb.u.push(0, 0);
+    mb.o.push(x * objScale, y * objScale, z * objScale);
+    mb.c.push(col ? col[0] : 1, col ? col[1] : 1, col ? col[2] : 1);
+  }
+  const idx = gm.idx || gm.index;
+  for (let k = 0; k < idx.length; k++) mb.i.push(base + idx[k]);
+  return mb;
+}
+
+/* ---- 基础几何：长方体 ---- */
+function geoBox(w, h, d) {
+  const x = w / 2, y = h / 2, z = d / 2;
+  const faces = [
+    { n: [0, 0, 1], v: [[-x, -y, z], [x, -y, z], [x, y, z], [-x, y, z]], uv: [[0, 0], [1, 0], [1, 1], [0, 1]] },
+    { n: [0, 0, -1], v: [[x, -y, -z], [-x, -y, -z], [-x, y, -z], [x, y, -z]], uv: [[0, 0], [1, 0], [1, 1], [0, 1]] },
+    { n: [1, 0, 0], v: [[x, -y, z], [x, -y, -z], [x, y, -z], [x, y, z]], uv: [[0, 0], [1, 0], [1, 1], [0, 1]] },
+    { n: [-1, 0, 0], v: [[-x, -y, -z], [-x, -y, z], [-x, y, z], [-x, y, -z]], uv: [[0, 0], [1, 0], [1, 1], [0, 1]] },
+    { n: [0, 1, 0], v: [[-x, y, z], [x, y, z], [x, y, -z], [-x, y, -z]], uv: [[0, 0], [1, 0], [1, 1], [0, 1]] },
+    { n: [0, -1, 0], v: [[-x, -y, -z], [x, -y, -z], [x, -y, z], [-x, -y, z]], uv: [[0, 0], [1, 0], [1, 1], [0, 1]] }
+  ];
+  const out = { pos: [], nrm: [], uv: [], idx: [] };
+  faces.forEach((f, fi) => {
+    const b = fi * 4;
+    f.v.forEach((vv, k) => { out.pos.push(...vv); out.nrm.push(...f.n); out.uv.push(...f.uv[k]); });
+    out.idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+  });
+  return out;
+}
+
+/* ---- 基础几何：圆柱 / 圆台（沿 Y 轴，底在 -h/2，顶在 +h/2） ---- */
+function geoCylinder(rBottom, rTop, h, seg, caps = true) {
+  const out = { pos: [], nrm: [], uv: [], idx: [] };
+  const y0 = -h / 2, y1 = h / 2;
+  const slope = (rBottom - rTop) / h;
+  for (let s = 0; s <= seg; s++) {
+    const a = s / seg * Math.PI * 2;
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const nx = ca, nz = sa, ny = slope;
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    out.pos.push(rBottom * ca, y0, rBottom * sa); out.nrm.push(nx / nl, ny / nl, nz / nl); out.uv.push(s / seg, 0);
+    out.pos.push(rTop * ca, y1, rTop * sa); out.nrm.push(nx / nl, ny / nl, nz / nl); out.uv.push(s / seg, 1);
+  }
+  for (let s = 0; s < seg; s++) {
+    const a = s * 2, b = a + 1, c = a + 2, d = a + 3;
+    out.idx.push(a, b, d, a, d, c);
+  }
+  if (caps) {
+    // 底面
+    let cb = out.pos.length / 3;
+    out.pos.push(0, y0, 0); out.nrm.push(0, -1, 0); out.uv.push(0.5, 0.5);
+    for (let s = 0; s <= seg; s++) {
+      const a = s / seg * Math.PI * 2;
+      out.pos.push(rBottom * Math.cos(a), y0, rBottom * Math.sin(a));
+      out.nrm.push(0, -1, 0); out.uv.push(0.5 + 0.5 * Math.cos(a), 0.5 + 0.5 * Math.sin(a));
+    }
+    for (let s = 0; s < seg; s++) out.idx.push(cb, cb + 1 + s, cb + 2 + s);
+    // 顶面
+    cb = out.pos.length / 3;
+    out.pos.push(0, y1, 0); out.nrm.push(0, 1, 0); out.uv.push(0.5, 0.5);
+    for (let s = 0; s <= seg; s++) {
+      const a = s / seg * Math.PI * 2;
+      out.pos.push(rTop * Math.cos(a), y1, rTop * Math.sin(a));
+      out.nrm.push(0, 1, 0); out.uv.push(0.5 + 0.5 * Math.cos(a), 0.5 + 0.5 * Math.sin(a));
+    }
+    for (let s = 0; s < seg; s++) out.idx.push(cb, cb + 2 + s, cb + 1 + s);
+  }
+  return out;
+}
+
+/* ---- 基础几何：球 / 椭球 ---- */
+function geoSphere(r, segU = 16, segV = 12) {
+  const out = { pos: [], nrm: [], uv: [], idx: [] };
+  for (let v = 0; v <= segV; v++) {
+    const phi = v / segV * Math.PI;
+    for (let u = 0; u <= segU; u++) {
+      const th = u / segU * Math.PI * 2;
+      const x = Math.sin(phi) * Math.cos(th), y = Math.cos(phi), z = Math.sin(phi) * Math.sin(th);
+      out.pos.push(x * r, y * r, z * r);
+      out.nrm.push(x, y, z);
+      out.uv.push(u / segU, v / segV);
+    }
+  }
+  for (let v = 0; v < segV; v++) for (let u = 0; u < segU; u++) {
+    const a = v * (segU + 1) + u, b = a + 1, c = a + segU + 1, d = c + 1;
+    out.idx.push(a, c, b, b, c, d);
+  }
+  return out;
+}
+
+/* ---- 基础几何：圆台平面（叶子 / 木片） ---- */
+function geoQuad(w, h) {
+  const x = w / 2, y = h / 2;
+  return {
+    pos: [-x, 0, 0, x, 0, 0, x, h, 0, -x, h, 0],
+    nrm: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1],
+    uv: [0, 0, 1, 0, 1, 1, 0, 1],
+    idx: [0, 1, 2, 0, 2, 3]
+  };
+}
+
+/* ---- 基础几何：圆锥（树冠层） ---- */
+function geoCone(r, h, seg) {
+  const out = { pos: [], nrm: [], uv: [], idx: [] };
+  const y0 = 0, y1 = h;
+  const sl = r / h;
+  for (let s = 0; s <= seg; s++) {
+    const a = s / seg * Math.PI * 2;
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const nx = ca, nz = sa, ny = sl;
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    out.pos.push(r * ca, y0, r * sa); out.nrm.push(nx / nl, ny / nl, nz / nl); out.uv.push(s / seg, 0);
+    out.pos.push(0, y1, 0); out.nrm.push(nx / nl, ny / nl, nz / nl); out.uv.push(s / seg, 1);
+  }
+  for (let s = 0; s < seg; s++) out.idx.push(s * 2, s * 2 + 1, s * 2 + 2);
+  return out;
+}
+
+/* ---- 上传到 GPU ---- */
+function uploadMesh(mb, mode) {
+  const gi = gl.createVertexArray();
+  gl.bindVertexArray(gi);
+  const vbo = gl.createBuffer();
+  const floats = [];
+  const count = mb.p.length / 3;
+  for (let i = 0; i < count; i++) {
+    floats.push(mb.p[i * 3], mb.p[i * 3 + 1], mb.p[i * 3 + 2]);
+    floats.push(mb.n[i * 3], mb.n[i * 3 + 1], mb.n[i * 3 + 2]);
+    floats.push(mb.u[i * 2], mb.u[i * 2 + 1]);
+    floats.push(mb.o[i * 3], mb.o[i * 3 + 1], mb.o[i * 3 + 2]);
+    floats.push(mb.c[i * 3], mb.c[i * 3 + 1], mb.c[i * 3 + 2]);
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(floats), gl.STATIC_DRAW);
+  const stride = 14 * 4;
+  const attrs = [[0, 3, 0], [1, 3, 12], [2, 2, 24], [3, 3, 32], [4, 3, 44]];
+  attrs.forEach(([loc, size, off]) => {
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride, off);
+  });
+  const ibo = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(mb.i), gl.STATIC_DRAW);
+  // 关键：实例属性槽默认关闭，避免 divisor 状态残留到非实例化网格上
+  for (let k = 5; k <= 8; k++) {
+    gl.disableVertexAttribArray(k);
+    gl.vertexAttribDivisor(k, 0);
+  }
+  gl.bindVertexArray(null);
+  return {
+    vao: gi, vbo, ibo, count: mb.i.length, mode: mode || gl.TRIANGLES,
+    tri: Math.floor(mb.i.length / 3)
+  };
+}
+
+/* ============================== 材质分组 ============================== */
+const MAT = { WOOD: 0, STONE: 1, BARK: 2, GROUND: 3, LEAF: 4, CLOTH: 5, PAPER: 6, EMISSIVE: 7 };
+
+/* ============================== 场景参数 ============================== */
+const SUN_DIR = V3.norm([-0.52, 0.30, -0.80]);   // 低角度逆光，从森林后方斜射
+const SUN_COLOR = [1.00, 0.80, 0.54];
+const FOG_COLOR = [0.52, 0.60, 0.66];
+const FOG_DENSITY = 0.0105;
+const LAMP_POS = [-2.62, 2.32, 3.30];
+const LAMP_COLOR = [1.0, 0.56, 0.20];
+const WIN_POS = [-1.95, 1.85, 2.55];
+const WIN_COLOR = [1.0, 0.52, 0.18];
+
+/* ============================== 建：小木屋 ============================== */
+function buildCabin() {
+  const wood = MB(), stone = MB(), cloth = MB(), paper = MB(), emissive = MB();
+
+  // ---------- 石基座 ----------
+  for (let ring = 0; ring < 3; ring++) {
+    const y = 0.04 + ring * 0.145;
+    const x0 = -4.12, x1 = 4.12, z0 = -3.55, z1 = 2.45;
+    const sx = 0.42 + rnd() * 0.2, sz = 0.34 + rnd() * 0.16;
+    for (let x = x0; x < x1; x += 0.5) {
+      for (const zz of [z0, z1]) {
+        addGeo(stone, geoBox(sx * rr(0.85, 1.2), 0.16, sz * rr(0.85, 1.25)),
+          M4.trs([x + rr(-0.04, 0.04), y + rr(-0.02, 0.02), zz + rr(-0.05, 0.05)], [0, rr(-0.2, 0.2), 0], [1, 1, 1]), [1, 1, 1]);
+      }
+    }
+    for (let z = z0; z < z1; z += 0.5) {
+      for (const xx of [x0, x1]) {
+        addGeo(stone, geoBox(sx * rr(0.85, 1.25), 0.16, sz * rr(0.85, 1.2)),
+          M4.trs([xx + rr(-0.05, 0.05), y + rr(-0.02, 0.02), z + rr(-0.04, 0.04)], [0, rr(-0.2, 0.2), 0], [1, 1, 1]), [1, 1, 1]);
+      }
+    }
+  }
+
+  // ---------- 原木墙体（正面开真实门窗洞，其余用木板填实） ----------
+  const WX = 3.9, WZ0 = -3.4, WZ1 = 2.4, LOG_R = 0.235, LOG_STEP = 0.40;
+  const levels = 10;
+  const DOOR_X = 0.0, DOOR_W = 1.12, DOOR_BASE = 0.62, DOOR_TOP = 2.67;
+  const WIN_Y0 = 1.85, WIN_Y1 = 2.75, WIN_X = [-1.95, 1.72], WIN_W = 0.92;
+  const WALLTOP = 0.55 + levels * LOG_STEP;   // 墙顶高度（供填板使用）
+
+  // 洞口列表（正面）
+  const openings = [{ x0: DOOR_X - DOOR_W / 2, x1: DOOR_X + DOOR_W / 2, y0: DOOR_BASE, y1: DOOR_TOP }];
+  for (const wx of WIN_X) openings.push({ x0: wx - WIN_W / 2, x1: wx + WIN_W / 2, y0: WIN_Y0, y1: WIN_Y1 });
+
+  for (let lv = 0; lv < levels; lv++) {
+    const y = 0.55 + lv * LOG_STEP;
+    // ---- 前墙：按洞口切分原木 ----
+    const cuts = [];
+    for (const op of openings) {
+      if (y + LOG_R > op.y0 && y - LOG_R < op.y1) cuts.push([Math.max(op.x0, -WX), Math.min(op.x1, WX)]);
+    }
+    cuts.sort((a, b) => a[0] - b[0]);
+    const segs = [];
+    let cur = -WX - 0.25;
+    for (const [a, b] of cuts) {
+      if (a > cur) segs.push([cur, Math.min(a, WX)]);
+      cur = Math.max(cur, b);
+    }
+    if (cur < WX + 0.25) segs.push([cur, WX + 0.25]);
+    for (const [a, b] of segs) {
+      const len = b - a;
+      if (len < 0.25) continue;
+      addGeo(wood, geoCylinder(LOG_R, LOG_R, len, 14, true),
+        M4.trs([(a + b) / 2, y, WZ1], [0, 0, Math.PI / 2], [1, 1, 1]), [1, 1, 1]);
+    }
+    // ---- 后墙 / 侧墙：整根 ----
+    addGeo(wood, geoCylinder(LOG_R, LOG_R, WX * 2 + 0.5, 14, true),
+      M4.trs([0, y, WZ0], [0, 0, Math.PI / 2], [1, 1, 1]), [1, 1, 1]);
+    for (const xx of [-WX, WX]) {
+      addGeo(wood, geoCylinder(LOG_R, LOG_R, WZ1 - WZ0 + 0.5, 14, true),
+        M4.trs([xx, y, (WZ0 + WZ1) / 2], [Math.PI / 2, 0, 0], [1, 1, 1]), [1, 1, 1]);
+    }
+  }
+
+  // ---------- 前墙缝隙填补：只补原木之间的横缝，不再用整片墙板，门两侧保持通透 ----------
+  // 说明：原木是按洞口切分的，相邻层之间原本有空隙；这里在每两层原木之间补一条窄板，
+  //       宽度避开所有洞口，所以门和窗的位置仍然是通的（能看到屋内）。
+  {
+    const innerZ = WZ1 - 0.14;
+    const gapH = 0.12;
+    for (let lv = 0; lv < levels - 1; lv++) {
+      const yMid = 0.55 + lv * LOG_STEP + LOG_STEP * 0.5;
+      // 该高度是否落在洞口内（纵向）
+      const cutRanges = [];
+      for (const op of openings) {
+        if (yMid > op.y0 - 0.05 && yMid < op.y1 + 0.05) cutRanges.push([op.x0, op.x1]);
+      }
+      // 生成 [ -WX, WX ] 减去洞口后的分段
+      cutRanges.sort((a, b) => a[0] - b[0]);
+      const segs = [];
+      let cur = -WX - 0.2;
+      for (const [a, b] of cutRanges) {
+        if (a > cur) segs.push([cur, Math.min(a, WX + 0.2)]);
+        cur = Math.max(cur, b);
+      }
+      if (cur < WX + 0.2) segs.push([cur, WX + 0.2]);
+      for (const [a, b] of segs) {
+        const len = b - a;
+        if (len < 0.22) continue;
+        addGeo(wood, geoBox(len, gapH, 0.13),
+          M4.trs([(a + b) / 2, yMid, innerZ], [0, 0, 0], [1, 1, 1]), [0.82, 0.70, 0.56]);
+      }
+    }
+    // 门洞左右两侧的窄立框（贴着洞口边缘，不遮挡洞口本身）
+    for (const sx of [-1, 1]) {
+      addGeo(wood, geoBox(0.10, DOOR_TOP - DOOR_BASE, 0.22),
+        M4.trs([sx * (DOOR_W / 2 + 0.05), (DOOR_BASE + DOOR_TOP) / 2, innerZ], [0, 0, 0], [1, 1, 1]), [0.74, 0.62, 0.48]);
+    }
+    // 窗洞左右立框
+    for (const wx of WIN_X) {
+      for (const sx of [-1, 1]) {
+        addGeo(wood, geoBox(0.10, WIN_Y1 - WIN_Y0, 0.22),
+          M4.trs([wx + sx * (WIN_W / 2 + 0.05), (WIN_Y0 + WIN_Y1) / 2, innerZ], [0, 0, 0], [1, 1, 1]), [0.74, 0.62, 0.48]);
+      }
+    }
+  }
+
+  // ---------- 洞口周边补木（把空缺处用木头填满） ----------
+  {
+    // 门洞两侧立柱 + 上方过梁
+    for (const sx of [-1, 1]) {
+      addGeo(wood, geoBox(0.20, DOOR_TOP - DOOR_BASE + 0.30, 0.30),
+        M4.trs([sx * (DOOR_W / 2 + 0.10), (DOOR_BASE + DOOR_TOP) / 2, WZ1], [0, 0, 0], [1, 1, 1]), [0.86, 0.80, 0.72]);
+    }
+    addGeo(wood, geoBox(DOOR_W + 0.44, 0.22, 0.30),
+      M4.trs([0, DOOR_TOP + 0.11, WZ1], [0, 0, 0], [1, 1, 1]), [0.80, 0.74, 0.66]);
+    // 窗洞四周补框
+    for (const wx of WIN_X) {
+      addGeo(wood, geoBox(WIN_W + 0.30, 0.16, 0.28),
+        M4.trs([wx, WIN_Y0 - 0.08, WZ1], [0, 0, 0], [1, 1, 1]), [0.82, 0.76, 0.68]);
+      addGeo(wood, geoBox(WIN_W + 0.30, 0.16, 0.28),
+        M4.trs([wx, WIN_Y1 + 0.08, WZ1], [0, 0, 0], [1, 1, 1]), [0.82, 0.76, 0.68]);
+      for (const sx of [-1, 1]) {
+        addGeo(wood, geoBox(0.16, WIN_Y1 - WIN_Y0 + 0.24, 0.28),
+          M4.trs([wx + sx * (WIN_W / 2 + 0.08), (WIN_Y0 + WIN_Y1) / 2, WZ1], [0, 0, 0], [1, 1, 1]), [0.82, 0.76, 0.68]);
+      }
+    }
+    // 门洞内侧的地槛
+    addGeo(wood, geoBox(DOOR_W + 0.5, 0.14, 0.5),
+      M4.trs([0, 0.60, WZ1 - 0.06], [0, 0, 0], [1, 1, 1]), [0.74, 0.68, 0.60]);
+  }
+
+  // ---------- 墙体顶部高度（屋顶结构的基准，必须在使用前定义） ----------
+  const BASE_Y = 0.55 + levels * LOG_STEP;
+  const GW = WX * 2 - 0.7, GH = 2.6;
+
+  // ---------- 屋顶（两坡，屋脊沿 X 轴；前檐完整覆盖门廊） ----------
+  const RIDGE_X = 5.0;
+  const EAVE_Y = BASE_Y + 0.20;
+  const FRONT_EAVE_Z = (WZ1 + 2.20) + 0.55;
+  const BACK_EAVE_Z = WZ0 - 0.55;
+  const RIDGE_Y = EAVE_Y + 1.95;
+  for (const side of [-1, 1]) {
+    const eaveZ = side > 0 ? FRONT_EAVE_Z : BACK_EAVE_Z;
+    const lenZ = Math.abs(eaveZ);
+    const slabLen = Math.hypot(lenZ, RIDGE_Y - EAVE_Y) + 0.25;
+    const ang = side * Math.atan2(RIDGE_Y - EAVE_Y, lenZ);
+    const cy = (RIDGE_Y + EAVE_Y) * 0.5 + 0.10;
+    const cz = side * (lenZ * 0.5);
+    addGeo(wood, geoBox(RIDGE_X * 2, 0.28, slabLen),
+      M4.trs([0, cy, cz], [ang, 0, 0], [1, 1, 1]), [0.92, 0.90, 0.86]);
+    for (let bx = -RIDGE_X + 0.40; bx < RIDGE_X; bx += 0.70) {
+      addGeo(wood, geoBox(0.54, 0.08, slabLen * 0.985),
+        M4.trs([bx, cy + 0.13, cz], [ang, 0, 0], [1, 1, 1]), [0.98, 0.96, 0.92]);
+    }
+  }
+  addGeo(wood, geoCylinder(0.17, 0.17, RIDGE_X * 2 + 0.3, 10, true),
+    M4.trs([0, RIDGE_Y + 0.13, 0.3], [0, 0, Math.PI / 2], [1, 1, 1]), [1, 1, 1]);
+
+  // ---------- 屋顶整体填实：墙顶到屋面之间全部用横板封住（约 1.1 单位厚） ----------
+  // 关键：不是加一块贴片，而是从后墙到前檐、从墙顶到屋面下方全部填满
+  {
+    const WALLTOP = BASE_Y + 0.12;
+    const fillSteps = 7;
+    for (let i = 0; i < fillSteps; i++) {
+      const t = i / fillSteps;
+      const y = WALLTOP + (EAVE_Y - WALLTOP) * (t + 0.5 / fillSteps) + 0.35 * t;
+      const w = (RIDGE_X * 2) * (1 - t * 0.06);
+      addGeo(wood, geoBox(w, (EAVE_Y - WALLTOP) / fillSteps * 1.08, (FRONT_EAVE_Z - BACK_EAVE_Z)),
+        M4.trs([0, y, (FRONT_EAVE_Z + BACK_EAVE_Z) * 0.5], [0, 0, 0], [1, 1, 1]),
+        i % 2 ? [0.82, 0.78, 0.72] : [0.88, 0.84, 0.77]);
+    }
+  }
+
+  // ---------- 山墙三角（±X 两端）：从墙顶一路收到屋脊的实心三角 ----------
+  for (const sx of [-1, 1]) {
+    const steps = 10;
+    for (let i = 0; i < steps; i++) {
+      const t = i / steps;
+      const y = EAVE_Y + (RIDGE_Y - EAVE_Y) * (t + 0.5 / steps);
+      const spanZ = (FRONT_EAVE_Z - BACK_EAVE_Z) * (1 - t * 0.9);
+      if (spanZ < 0.5) break;
+      addGeo(wood, geoBox(0.30, (RIDGE_Y - EAVE_Y) / steps * 1.10, spanZ),
+        M4.trs([sx * RIDGE_X, y, (FRONT_EAVE_Z + BACK_EAVE_Z) * 0.5], [0, 0, 0], [1, 1, 1]),
+        i % 2 ? [0.84, 0.80, 0.74] : [0.90, 0.86, 0.79]);
+    }
+  }
+
+  // ---------- 前檐封板：正面屋檐下沿的收口 ----------
+  addGeo(wood, geoBox(RIDGE_X * 2 + 0.1, 0.30, 0.16),
+    M4.trs([0, EAVE_Y - 0.06, FRONT_EAVE_Z - 0.08], [0, 0, 0], [1, 1, 1]), [0.76, 0.71, 0.64]);
+
+  // ---------- 墙体底部踢脚板：封住原木与基座/地台之间的缝 ----------
+  addGeo(wood, geoBox(WX * 2 + 0.16, 0.26, WZ1 - WZ0 + 0.2),
+    M4.trs([0, 0.56, (WZ0 + WZ1) * 0.5], [0, 0, 0], [1, 1, 1]), [0.72, 0.66, 0.58]);
+
+  // ---------- 门（常开：绕合页向屋内敞开约 75°） ----------
+  const DOOR_H = DOOR_TOP - DOOR_BASE;
+  const DOOR_Z = WZ1;                       // 洞口所在墙面
+  const HINGE_X = DOOR_X - DOOR_W / 2;      // 合页在左侧
+  const OPEN_ANGLE = 1.30;                  // 绕 Y 轴 +1.30rad：门板向 +Z 摆出，形成敞开的门廊视野
+  // 门板：以合页为原点旋转后再平移
+  const doorLocal = (px, py, pz, rx, ry, rz) => {
+    const local = M4.trs([px, py, pz], [rx, ry, rz], [1, 1, 1]);
+    const rot = M4.trs([0, 0, 0], [0, OPEN_ANGLE, 0], [1, 1, 1]);
+    const place = M4.trs([HINGE_X, DOOR_BASE + DOOR_H / 2, DOOR_Z], [0, 0, 0], [1, 1, 1]);
+    return M4.mul(place, M4.mul(rot, local));
+  };
+  // 门板主体（5 条竖向木板）
+  for (let i = 0; i < 5; i++) {
+    addGeo(wood, geoBox(DOOR_W / 5 - 0.015, DOOR_H, 0.075),
+      doorLocal((i + 0.5) * DOOR_W / 5 - DOOR_W / 2, 0, 0, 0, 0, 0), [0.82, 0.80, 0.76]);
+  }
+  // 门板横向加强条（正反两面各一条，开门后能看到门板内侧）
+  addGeo(wood, geoBox(DOOR_W - 0.08, 0.12, 0.045),
+    doorLocal(0, DOOR_H * 0.28, 0.06, 0, 0, 0), [0.72, 0.66, 0.58]);
+  addGeo(wood, geoBox(DOOR_W - 0.08, 0.12, 0.045),
+    doorLocal(0, -DOOR_H * 0.28, 0.06, 0, 0, 0), [0.72, 0.66, 0.58]);
+  addGeo(wood, geoBox(DOOR_W - 0.08, 0.12, 0.045),
+    doorLocal(0, DOOR_H * 0.28, -0.06, 0, 0, 0), [0.70, 0.64, 0.56]);
+  // 门把手（开着的门，把手朝屋内一侧）
+  addGeo(stone, geoSphere(0.06, 10, 8),
+    doorLocal(DOOR_W / 2 - 0.16, 0.02, -0.08, 0, 0, 0), [0.92, 0.76, 0.46]);
+  addGeo(stone, geoCylinder(0.022, 0.022, 0.10, 8, true),
+    doorLocal(DOOR_W / 2 - 0.16, 0.02, -0.04, Math.PI / 2, 0, 0), [0.80, 0.66, 0.40]);
+
+  // 门框（固定在墙面上，不受开门影响）
+  addGeo(wood, geoBox(DOOR_W + 0.22, 0.14, 0.20),
+    M4.trs([DOOR_X, DOOR_TOP + 0.07, DOOR_Z], [0, 0, 0], [1, 1, 1]), [0.88, 0.82, 0.74]);
+  addGeo(wood, geoBox(0.13, DOOR_H + 0.14, 0.20),
+    M4.trs([HINGE_X - 0.055, DOOR_BASE + DOOR_H / 2, DOOR_Z], [0, 0, 0], [1, 1, 1]), [0.88, 0.82, 0.74]);
+  addGeo(wood, geoBox(0.13, DOOR_H + 0.14, 0.20),
+    M4.trs([DOOR_X + DOOR_W / 2 + 0.055, DOOR_BASE + DOOR_H / 2, DOOR_Z], [0, 0, 0], [1, 1, 1]), [0.88, 0.82, 0.74]);
+  // 门槛
+  addGeo(wood, geoBox(DOOR_W + 0.26, 0.10, 0.26),
+    M4.trs([DOOR_X, DOOR_BASE - 0.03, DOOR_Z], [0, 0, 0], [1, 1, 1]), [0.74, 0.68, 0.60]);
+
+  // ---------- 窗户（前墙两扇） ----------
+  for (const wx of [-1.95, 1.72]) {
+    const wy = (WIN_Y0 + WIN_Y1) / 2, wz = WZ1 + 0.06;
+    addGeo(wood, geoBox(0.92, 0.92, 0.1), M4.trs([wx, wy, wz], [0, 0, 0], [1, 1, 1]), [0.95, 0.93, 0.88]);
+    addGeo(emissive, geoBox(0.74, 0.74, 0.04), M4.trs([wx, wy, wz - 0.02], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+    addGeo(wood, geoBox(0.05, 0.78, 0.06), M4.trs([wx, wy, wz + 0.04], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+    addGeo(wood, geoBox(0.78, 0.05, 0.06), M4.trs([wx, wy, wz + 0.04], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+    addGeo(wood, geoBox(1.06, 0.08, 0.22), M4.trs([wx, wy - 0.5, wz + 0.08], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  }
+
+  // ---------- 门廊（在屋檐覆盖范围内，柱子顶到屋面，杜绝悬空） ----------
+  const PZ0 = WZ1, PZ1 = WZ1 + 2.20, PY = 0.42;
+  // 地台（加宽到与墙体同宽，两侧不再有缝）
+  addGeo(wood, geoBox(8.4, 0.22, PZ1 - PZ0 + 0.22),
+    M4.trs([0, PY - 0.11, (PZ0 + PZ1) / 2], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  // 地台下方整块石砌基础：从地面一直填到地台底，彻底封住缝隙
+  {
+    const baseH = PY - 0.22;
+    addGeo(stone, geoBox(8.4, baseH, PZ1 - PZ0 + 0.22),
+      M4.trs([0, baseH * 0.5 - 0.02, (PZ0 + PZ1) / 2], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+    // 基础表面的石块纹理（错缝排列）
+    for (let bx = -4.05; bx < 4.1; bx += 0.52) {
+      for (let row = 0; row < 2; row++) {
+        addGeo(stone, geoBox(0.46, 0.16, 0.10),
+          M4.trs([bx + (row % 2 ? 0.24 : 0), 0.10 + row * 0.18, PZ1 + 0.10], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+      }
+    }
+    // 两侧封边
+    for (const sx of [-1, 1]) {
+      addGeo(stone, geoBox(0.12, baseH, PZ1 - PZ0 + 0.22),
+        M4.trs([sx * 4.2, baseH * 0.5 - 0.02, (PZ0 + PZ1) / 2], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+    }
+  }
+  // 地台木条
+  for (let bx = -4.05; bx < 4.1; bx += 0.30) {
+    addGeo(wood, geoBox(0.26, 0.05, PZ1 - PZ0 + 0.20),
+      M4.trs([bx, PY + 0.01, (PZ0 + PZ1) / 2], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  }
+  // 地台四周封边板：把地台侧面与地面之间的缝完全包住
+  for (const [fx, fz, fw, fd] of [
+    [0, PZ1 + 0.11, 8.5, 0.14],           // 前沿
+    [-4.22, (PZ0 + PZ1) / 2, 0.14, PZ1 - PZ0 + 0.3],  // 左
+    [4.22, (PZ0 + PZ1) / 2, 0.14, PZ1 - PZ0 + 0.3]    // 右
+  ]) {
+    addGeo(wood, geoBox(fw, PY + 0.10, fd),
+      M4.trs([fx, (PY + 0.10) * 0.5 - 0.02, fz], [0, 0, 0], [1, 1, 1]), [0.70, 0.63, 0.55]);
+  }
+
+  // 台阶
+  for (let s = 0; s < 2; s++) {
+    addGeo(wood, geoBox(2.3, 0.14, 0.46),
+      M4.trs([0, PY - 0.12 - s * 0.16, PZ1 + 0.30 + s * 0.44], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  }
+  // 廊柱：从地台直顶到屋面底部（屋面在该处的高度约 4.4）
+  {
+    const postZ = PZ1 - 0.12;
+    const roofYatPost = EAVE_Y + ((FRONT_EAVE_Z - postZ) / FRONT_EAVE_Z) * (RIDGE_Y - EAVE_Y);
+    const postH = roofYatPost - PY - 0.10;
+    for (const px of [-2.20, 2.20]) {
+      addGeo(wood, geoCylinder(0.13, 0.115, postH, 10, true),
+        M4.trs([px, PY + postH * 0.5, postZ], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+      // 柱础
+      addGeo(stone, geoBox(0.34, 0.16, 0.34), M4.trs([px, PY + 0.08, postZ], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+    }
+    // 檐下横梁（把两根柱子连起来，视觉上"托住"屋面）
+    addGeo(wood, geoBox(4.75, 0.20, 0.18),
+      M4.trs([0, roofYatPost - 0.16, postZ], [0, 0, 0], [1, 1, 1]), [0.86, 0.80, 0.72]);
+    // 悬挑斜撑：从柱头斜向上撑到屋面，消除"柱子没顶住"的错觉
+    for (const px of [-2.20, 2.20]) {
+      addGeo(wood, geoBox(0.12, 0.12, 1.05),
+        M4.trs([px, roofYatPost - 0.05, postZ + 0.42], [-0.62, 0, 0], [1, 1, 1]), [0.80, 0.74, 0.66]);
+    }
+  }
+  // 门廊侧栏（右侧），高度降到与地台比例协调
+  for (let i = 0; i < 7; i++) {
+    addGeo(wood, geoBox(0.07, 0.74, 0.07),
+      M4.trs([0.98 + i * 0.20, PY + 0.42, PZ1 - 0.10], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  }
+  addGeo(wood, geoBox(1.45, 0.09, 0.13), M4.trs([1.58, PY + 0.76, PZ1 - 0.10], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+
+  // ---------- 灯笼 ----------
+  addGeo(wood, geoBox(0.1, 0.42, 0.1), M4.trs([-2.62, 2.62, PZ1 - 0.4], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  addGeo(wood, geoBox(0.5, 0.07, 0.07), M4.trs([-2.5, 2.8, PZ1 - 0.22], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  addGeo(wood, geoCylinder(0.20, 0.17, 0.06, 10, true), M4.trs([LAMP_POS[0], LAMP_POS[1] + 0.20, LAMP_POS[2]], [Math.PI, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  addGeo(wood, geoCylinder(0.17, 0.20, 0.06, 10, true), M4.trs([LAMP_POS[0], LAMP_POS[1] - 0.20, LAMP_POS[2]], [Math.PI, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  addGeo(emissive, geoCylinder(0.16, 0.16, 0.36, 10, true), M4.trs([LAMP_POS[0], LAMP_POS[1], LAMP_POS[2]], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+
+  // ---------- 左侧长凳（供阅读者坐） ----------
+  const BX = -1.72, BY = PY + 0.02, BZ = WZ1 + 1.45;
+  addGeo(wood, geoBox(1.5, 0.09, 0.42), M4.trs([BX, BY + 0.42, BZ], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  addGeo(wood, geoBox(1.5, 0.07, 0.09), M4.trs([BX, BY + 0.72, BZ - 0.19], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  for (const dz of [-0.16, 0.16]) for (const dx of [-0.62, 0.62]) {
+    addGeo(wood, geoBox(0.08, 0.42, 0.08), M4.trs([BX + dx, BY + 0.21, BZ + dz], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  }
+  addGeo(wood, geoBox(1.32, 0.06, 0.06), M4.trs([BX, BY + 0.62, BZ - 0.16], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+
+  // ---------- 柴堆 ----------
+  for (let row = 0; row < 3; row++) {
+    for (let i = 0; i < 6 - row; i++) {
+      addGeo(wood, geoCylinder(0.11, 0.11, 0.9, 7, true),
+        M4.trs([-4.45 + row * 0.02, 0.16 + row * 0.20, -2.6 + i * 0.23], [Math.PI / 2, 0, 0], [1, 1, 1]), [0.9, 0.9, 0.86]);
+    }
+  }
+
+  // ---------- 烟囱 ----------
+  for (let i = 0; i < 9; i++) {
+    const w = 0.62 - i * 0.008;
+    addGeo(stone, geoBox(w, 0.24, w),
+      M4.trs([-3.2 + rr(-0.02, 0.02), 1.0 + i * 0.235, -1.1], [0, rr(-0.06, 0.06), 0], [1, 1, 1]), [1, 1, 1]);
+  }
+  addGeo(stone, geoBox(0.78, 0.1, 0.78), M4.trs([-3.2, 3.16, -1.1], [0, 0.06, 0], [1, 1, 1]), [1, 1, 1]);
+
+  return { wood, stone, cloth, paper, emissive };
+}
+
+/* ============================== 建：屋内空间与家具 ============================== */
+function buildInterior() {
+  const wood = MB();     // 木材家具
+  const dark = MB();     // 深色木器 / 布料
+  const stone = MB();    // 壁炉与烟囱
+  const cloth = MB();    // 床品 / 地毯
+  const metal = MB();    // 金属小件
+  const lamp = MB();     // 烛光 / 火光（自发光）
+
+  const WX = 3.9, WZ0 = -3.4, WZ1 = 2.4, FLOOR = 0.56, CEIL = 4.45;
+
+  // ---------- 室内地板 ----------
+  addGeo(wood, geoBox(WX * 2 - 0.2, 0.10, WZ1 - WZ0 - 0.2),
+    M4.trs([0, FLOOR, (WZ0 + WZ1) / 2], [0, 0, 0], [1, 1, 1]), [0.74, 0.60, 0.46]);
+  // 地板木条
+  for (let bz = WZ0 + 0.3; bz < WZ1; bz += 0.46) {
+    addGeo(wood, geoBox(WX * 2 - 0.3, 0.03, 0.40),
+      M4.trs([0, FLOOR + 0.06, bz], [0, 0, 0], [1, 1, 1]), [0.80, 0.66, 0.50]);
+  }
+
+  // ---------- 室内墙面衬里（原木内侧）+ 天花 ----------
+  for (const xx of [-WX + 0.14, WX - 0.14]) {
+    addGeo(wood, geoBox(0.10, CEIL - FLOOR, WZ1 - WZ0 - 0.2),
+      M4.trs([xx, (FLOOR + CEIL) / 2, (WZ0 + WZ1) / 2], [0, 0, 0], [1, 1, 1]), [0.80, 0.68, 0.54]);
+  }
+  addGeo(wood, geoBox(WX * 2 - 0.2, 0.10, WZ1 - WZ0 - 0.2),
+    M4.trs([0, CEIL, (WZ0 + WZ1) / 2], [0, 0, 0], [1, 1, 1]), [0.70, 0.58, 0.46]);
+  addGeo(wood, geoBox(WX * 2 - 0.2, CEIL - FLOOR, 0.10),
+    M4.trs([0, (FLOOR + CEIL) / 2, WZ0 + 0.14], [0, 0, 0], [1, 1, 1]), [0.76, 0.64, 0.50]);
+  // 天花横梁（结构感）
+  for (let bx = -3.0; bx <= 3.0; bx += 1.5) {
+    addGeo(wood, geoBox(0.18, 0.18, WZ1 - WZ0 - 0.2),
+      M4.trs([bx, CEIL - 0.12, (WZ0 + WZ1) / 2], [0, 0, 0], [1, 1, 1]), [0.62, 0.50, 0.38]);
+  }
+
+  // ---------- 壁炉（左后角） ----------
+  const FPX = -WX + 0.55, FPZ = WZ0 + 0.55;
+  for (let i = 0; i < 5; i++) {
+    addGeo(stone, geoBox(1.30 - i * 0.06, 0.30, 0.72),
+      M4.trs([FPX, FLOOR + 0.15 + i * 0.30, FPZ], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  }
+  // 炉口
+  addGeo(stone, geoBox(0.72, 0.62, 0.10),
+    M4.trs([FPX, FLOOR + 0.36, FPZ + 0.33], [0, 0, 0], [1, 1, 1]), [0.42, 0.40, 0.38]);
+  // 火（自发光）
+  addGeo(lamp, geoBox(0.52, 0.40, 0.06),
+    M4.trs([FPX, FLOOR + 0.32, FPZ + 0.36], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  addGeo(lamp, geoSphere(0.16, 10, 8),
+    M4.trs([FPX - 0.10, FLOOR + 0.42, FPZ + 0.36], [0, 0, 0], [1.0, 1.5, 0.7]), [1, 1, 1]);
+  // 烟囱（沿后墙向上）
+  for (let i = 0; i < 8; i++) {
+    addGeo(stone, geoBox(0.62, 0.32, 0.52),
+      M4.trs([FPX, FLOOR + 1.55 + i * 0.32, FPZ - 0.06], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  }
+  // 壁炉台
+  addGeo(wood, geoBox(1.52, 0.10, 0.86),
+    M4.trs([FPX, FLOOR + 1.52, FPZ + 0.08], [0, 0, 0], [1, 1, 1]), [0.66, 0.50, 0.36]);
+  // 台上的烛台
+  addGeo(metal, geoCylinder(0.035, 0.030, 0.22, 8, true),
+    M4.trs([FPX - 0.42, FLOOR + 1.68, FPZ + 0.10], [0, 0, 0], [1, 1, 1]), [0.55, 0.45, 0.30]);
+  addGeo(lamp, geoSphere(0.045, 8, 6),
+    M4.trs([FPX - 0.42, FLOOR + 1.82, FPZ + 0.10], [0, 0, 0], [0.8, 1.6, 0.8]), [1, 1, 1]);
+
+  // ---------- 木桌 + 椅子（屋中央偏外） ----------
+  const TX = 1.35, TZ = -0.30;
+  addGeo(wood, geoBox(2.10, 0.10, 1.10),
+    M4.trs([TX, FLOOR + 0.78, TZ], [0, 0, 0], [1, 1, 1]), [0.78, 0.62, 0.44]);
+  for (const dx of [-0.92, 0.92]) for (const dz of [-0.44, 0.44]) {
+    addGeo(wood, geoBox(0.10, 0.74, 0.10),
+      M4.trs([TX + dx, FLOOR + 0.40, TZ + dz], [0, 0, 0], [1, 1, 1]), [0.62, 0.48, 0.34]);
+  }
+  // 桌布
+  addGeo(cloth, geoBox(1.30, 0.03, 0.70),
+    M4.trs([TX, FLOOR + 0.84, TZ], [0, 0, 0], [1, 1, 1]), [0.86, 0.78, 0.66]);
+  // 盘子
+  for (const dx of [-0.42, 0.42]) {
+    addGeo(cloth, geoCylinder(0.16, 0.14, 0.035, 12, true),
+      M4.trs([TX + dx, FLOOR + 0.87, TZ - 0.05], [0, 0, 0], [1, 1, 1]), [0.95, 0.93, 0.88]);
+  }
+  // 杯壶
+  addGeo(metal, geoCylinder(0.07, 0.09, 0.20, 10, true),
+    M4.trs([TX + 0.05, FLOOR + 0.95, TZ + 0.12], [0, 0, 0], [1, 1, 1]), [0.60, 0.50, 0.34]);
+  // 桌上的烛台（主光源）
+  addGeo(metal, geoCylinder(0.05, 0.06, 0.26, 10, true),
+    M4.trs([TX - 0.55, FLOOR + 0.98, TZ + 0.05], [0, 0, 0], [1, 1, 1]), [0.52, 0.42, 0.28]);
+  addGeo(lamp, geoSphere(0.06, 8, 6),
+    M4.trs([TX - 0.55, FLOOR + 1.16, TZ + 0.05], [0, 0, 0], [0.8, 1.8, 0.8]), [1, 1, 1]);
+
+  // 椅子（两把，相对而坐）
+  const chair = (cx, cz, ry) => {
+    addGeo(wood, geoBox(0.52, 0.08, 0.52),
+      M4.trs([cx, FLOOR + 0.46, cz], [0, ry, 0], [1, 1, 1]), [0.70, 0.54, 0.38]);
+    for (const dx of [-0.20, 0.20]) for (const dz of [-0.20, 0.20]) {
+      addGeo(wood, geoBox(0.07, 0.44, 0.07),
+        M4.trs([cx + dx, FLOOR + 0.22, cz + dz], [0, ry, 0], [1, 1, 1]), [0.58, 0.44, 0.32]);
+    }
+    addGeo(wood, geoBox(0.52, 0.62, 0.07),
+      M4.trs([cx - Math.sin(ry) * 0.24, FLOOR + 0.78, cz - Math.cos(ry) * 0.24], [0, ry, 0], [1, 1, 1]), [0.68, 0.52, 0.36]);
+  };
+  chair(TX - 0.15, TZ + 0.92, 0.0);
+  chair(TX + 0.15, TZ - 0.92, Math.PI);
+
+  // ---------- 靠墙书架（右墙） ----------
+  const SHX = WX - 0.42;
+  addGeo(wood, geoBox(0.42, 2.10, 2.40),
+    M4.trs([SHX, FLOOR + 1.05, 0.20], [0, 0, 0], [1, 1, 1]), [0.66, 0.50, 0.36]);
+  for (let s = 0; s < 4; s++) {
+    addGeo(wood, geoBox(0.36, 0.06, 2.30),
+      M4.trs([SHX + 0.03, FLOOR + 0.45 + s * 0.52, 0.20], [0, 0, 0], [1, 1, 1]), [0.80, 0.64, 0.46]);
+    // 书
+    for (let b = 0; b < 7; b++) {
+      const h = 0.24 + ((b * 7 + s * 3) % 5) * 0.035;
+      const color = [0.55 + (b % 3) * 0.10, 0.30 + (s % 2) * 0.08, 0.26];
+      addGeo(cloth, geoBox(0.20, h, 0.10),
+        M4.trs([SHX + 0.02, FLOOR + 0.49 + s * 0.52 + h / 2, -0.75 + b * 0.11], [0, 0, 0], [1, 1, 1]), color);
+    }
+  }
+
+  // ---------- 地毯 ----------
+  addGeo(cloth, geoBox(2.60, 0.03, 1.90),
+    M4.trs([0.55, FLOOR + 0.07, 1.05], [0, 0, 0], [1, 1, 1]), [0.56, 0.34, 0.30]);
+  addGeo(cloth, geoBox(2.30, 0.02, 1.60),
+    M4.trs([0.55, FLOOR + 0.09, 1.05], [0, 0, 0], [1, 1, 1]), [0.72, 0.48, 0.40]);
+
+  // ---------- 床（右后角） ----------
+  const BX2 = WX - 1.35, BZ2 = WZ0 + 1.15;
+  addGeo(wood, geoBox(1.70, 0.24, 1.15),
+    M4.trs([BX2, FLOOR + 0.30, BZ2], [0, 0, 0], [1, 1, 1]), [0.68, 0.52, 0.36]);
+  addGeo(cloth, geoBox(1.54, 0.22, 1.00),
+    M4.trs([BX2, FLOOR + 0.52, BZ2], [0, 0, 0], [1, 1, 1]), [0.86, 0.82, 0.74]);
+  addGeo(cloth, geoBox(0.62, 0.14, 0.78),
+    M4.trs([BX2 - 0.42, FLOOR + 0.68, BZ2], [0, 0.10, 0], [1, 1, 1]), [0.94, 0.92, 0.86]);
+  // 床头板
+  addGeo(wood, geoBox(0.14, 1.05, 1.15),
+    M4.trs([BX2 + 0.80, FLOOR + 0.72, BZ2], [0, 0, 0], [1, 1, 1]), [0.62, 0.46, 0.32]);
+  // 床尾毯
+  addGeo(cloth, geoBox(1.56, 0.06, 0.34),
+    M4.trs([BX2, FLOOR + 0.64, BZ2 - 0.36], [0, 0, 0], [1, 1, 1]), [0.50, 0.32, 0.28]);
+
+  // ---------- 窗内侧的窗台摆件 ----------
+  for (const wx of [-1.95, 1.72]) {
+    addGeo(wood, geoBox(1.05, 0.07, 0.26),
+      M4.trs([wx, 1.81, WZ1 - 0.14], [0, 0, 0], [1, 1, 1]), [0.78, 0.62, 0.46]);
+    addGeo(metal, geoCylinder(0.05, 0.05, 0.16, 8, true),
+      M4.trs([wx + 0.22, 1.93, WZ1 - 0.16], [0, 0, 0], [1, 1, 1]), [0.58, 0.48, 0.34]);
+  }
+
+  return { wood, dark, stone, cloth, metal, lamp };
+}
+
+/* ============================== 建：睡觉的小狐狸 ============================== */
+function buildFox() {
+  const fur = MB();      // 主体毛色（橙红）
+  const light = MB();    // 腹部 / 嘴部 / 尾尖（奶油白）
+  const dark = MB();     // 耳朵内侧 / 鼻尖 / 爪子（深褐）
+  const wood = MB();     // 长凳（复用原本的位置）
+
+  // 与长凳对齐的位置
+  const BX = -1.72, BY = 0.42 + 0.02 + 0.465, BZ = 2.4 + 1.45;
+  const rotY = -0.42;
+  const T = (x, y, z, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) => {
+    const local = M4.trs([x, y, z], [rx, ry, rz], [sx, sy, sz]);
+    const root = M4.trs([BX, BY, BZ], [0, rotY, 0], [1, 1, 1]);
+    return M4.mul(root, local);
+  };
+
+  const ORANGE = [0.86, 0.42, 0.16];
+  const CREAM = [0.98, 0.90, 0.78];
+  const DARKP = [0.26, 0.16, 0.12];
+
+  // ---------- 蜷缩的身体（两个椭球叠出一个团子） ----------
+  addGeo(fur, geoSphere(0.34, 18, 14), T(0, 0.16, 0.02, 0, 0, 0, 1.22, 0.86, 1.0), ORANGE);
+  addGeo(fur, geoSphere(0.26, 16, 12), T(-0.02, 0.20, 0.28, 0.1, 0, 0, 1.0, 0.90, 0.95), ORANGE);
+  // 腹部奶油白
+  addGeo(light, geoSphere(0.20, 14, 10), T(0.04, 0.06, 0.16, 0, 0, 0, 1.05, 0.55, 1.1), CREAM);
+
+  // ---------- 头（低垂，贴着前爪睡觉） ----------
+  addGeo(fur, geoSphere(0.21, 18, 14), T(0.16, 0.20, 0.52, 0.5, 0.3, 0, 1.0, 0.92, 1.0), ORANGE);
+  // 吻部
+  addGeo(light, geoSphere(0.105, 12, 9), T(0.12, 0.12, 0.70, 0.3, 0.2, 0, 1.0, 0.8, 1.15), CREAM);
+  // 鼻尖
+  addGeo(dark, geoSphere(0.038, 8, 6), T(0.10, 0.13, 0.79, 0, 0, 0), DARKP);
+  // 眼睛（两条闭合的缝，睡得很沉）
+  for (const sx of [-1, 1]) {
+    addGeo(dark, geoBox(0.075, 0.016, 0.03),
+      T(0.155 + sx * 0.085, 0.205, 0.665, 0.2, 0.25 + sx * 0.2, 0), DARKP);
+  }
+  // 耳朵（三角锥，一前一后）
+  for (const sx of [-1, 1]) {
+    const ex = 0.16 + sx * 0.13, ey = 0.35, ez = 0.47 - sx * 0.05;
+    addGeo(fur, geoCone(0.105, 0.20, 6), T(ex, ey, ez, -0.25, sx * 0.5, sx * 0.18), ORANGE);
+    addGeo(dark, geoCone(0.06, 0.13, 6), T(ex, ey + 0.005, ez + 0.012, -0.25, sx * 0.5, sx * 0.18), DARKP);
+  }
+
+  // ---------- 前爪（蜷在脸旁） ----------
+  for (const sx of [-1, 1]) {
+    addGeo(fur, geoCylinder(0.055, 0.05, 0.22, 8, true), T(0.10 + sx * 0.10, 0.10, 0.60, 1.35, 0, 0), ORANGE);
+    addGeo(light, geoSphere(0.06, 10, 7), T(0.10 + sx * 0.10, 0.055, 0.68, 0, 0, 0, 1.0, 0.7, 1.2), CREAM);
+  }
+
+  // ---------- 后腿（收在身侧） ----------
+  addGeo(fur, geoSphere(0.13, 12, 9), T(-0.20, 0.12, 0.16, 0, 0, 0.4, 1.0, 0.95, 1.15), ORANGE);
+  addGeo(fur, geoSphere(0.10, 10, 8), T(-0.26, 0.07, 0.30, 0, 0, 0.2, 1.0, 0.8, 1.1), ORANGE);
+
+  // ---------- 尾巴（大而蓬松，绕过身体，这是狐狸最标志性的特征） ----------
+  const tailPts = [
+    [0.02, 0.12, -0.18, 0.30, 0.30, 0.30],
+    [-0.16, 0.13, -0.10, 0.31, 0.32, 0.31],
+    [-0.28, 0.16, 0.04, 0.29, 0.31, 0.30],
+    [-0.34, 0.19, 0.20, 0.26, 0.28, 0.27],
+    [-0.33, 0.21, 0.34, 0.21, 0.23, 0.23]
+  ];
+  tailPts.forEach((p, i) => {
+    const isTip = i >= 3;
+    addGeo(isTip ? light : fur, geoSphere(1, 14, 11),
+      T(p[0], p[1], p[2], 0.2, 0.4, 0.1, p[3], p[4], p[5]), isTip ? CREAM : ORANGE);
+  });
+  // 尾尖一点深色
+  addGeo(dark, geoSphere(0.12, 10, 8), T(-0.34, 0.23, 0.44, 0, 0, 0, 1.0, 0.9, 1.0), DARKP);
+
+  // ---------- 长凳（狐狸睡在上面） ----------
+  const benchY = 0.42 + 0.02;
+  addGeo(wood, geoBox(1.50, 0.09, 0.44), M4.trs([BX, benchY + 0.42, BZ], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  addGeo(wood, geoBox(1.50, 0.07, 0.09), M4.trs([BX, benchY + 0.72, BZ - 0.19], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  for (const dz of [-0.16, 0.16]) for (const dx of [-0.62, 0.62]) {
+    addGeo(wood, geoBox(0.08, 0.42, 0.08), M4.trs([BX + dx, benchY + 0.21, BZ + dz], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+  }
+  addGeo(wood, geoBox(1.32, 0.06, 0.06), M4.trs([BX, benchY + 0.62, BZ - 0.16], [0, 0, 0], [1, 1, 1]), [1, 1, 1]);
+
+  return { fur, light, dark, wood };
+}
+
+/* ============================== 建：地形 / 树 / 草 / 石 ============================== */
+const CLEAR_R = 13.5;          // 木屋周围空地半径
+const HOUSE = { x: 0, z: -0.5 };
+
+function groundHeight(x, z) {
+  const dx = x - HOUSE.x, dz = z - HOUSE.z;
+  const d = Math.hypot(dx, dz);
+  const rolling = (fbm(x * 0.02 + 11.3, z * 0.02 + 7.7, 4) - 0.5) * 6.4;
+  const rise = smoothstep01(d, CLEAR_R, CLEAR_R + 26) * (3.2 + (fbm(x * 0.035, z * 0.035, 3) - 0.5) * 5.2);
+  const bump = (fbm(x * 0.22, z * 0.22, 3) - 0.5) * 0.26;
+  return rolling * 0.12 + rise * 0.55 + bump;
+}
+function smoothstep01(x, a, b) {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+/* 小径中心线（从台阶向外弯曲） */
+function pathFactor(x, z) {
+  const t = Math.max(0, (z - 3.6) / 20);
+  const cx = Math.sin(t * 2.4) * 2.2 + t * 1.4;
+  const w = 1.05 + t * 1.5;
+  return 1.0 - smoothstep01(Math.abs(x - cx), w * 0.35, w);
+}
+
+function buildTerrain() {
+  const mb = MB();
+  const pos = [], nrm = [], idx = [];
+  const RINGS = 84, SEGS = 128, RADIUS = 190;
+  const heights = [];
+  for (let r = 0; r <= RINGS; r++) {
+    const t = r / RINGS;
+    const rad = Math.pow(t, 1.8) * RADIUS + 0.02;
+    heights.push(rad);
+  }
+  const grid = [];
+  for (let r = 0; r <= RINGS; r++) {
+    for (let s = 0; s <= SEGS; s++) {
+      const a = s / SEGS * Math.PI * 2;
+      let x, z;
+      if (r === 0) { x = 0; z = 0; }
+      else {
+        x = Math.cos(a) * heights[r];
+        z = Math.sin(a) * heights[r];
+      }
+      const y = groundHeight(x, z);
+      grid.push([x, y, z]);
+    }
+  }
+  // 以世界坐标直接写入顶点（模型矩阵保持单位）
+  for (let r = 0; r <= RINGS; r++) {
+    for (let s = 0; s <= SEGS; s++) {
+      const [x, y, z] = grid[r * (SEGS + 1) + s];
+      // 法线：中心差分
+      const e = 0.55;
+      const hL = groundHeight(x - e, z), hR = groundHeight(x + e, z);
+      const hD = groundHeight(x, z - e), hU = groundHeight(x, z + e);
+      let nx = (hL - hR) / (2 * e), ny = 1, nz = (hD - hU) / (2 * e);
+      const nl = Math.hypot(nx, ny, nz);
+      mb.p.push(x, y, z); mb.n.push(nx / nl, ny / nl, nz / nl);
+      mb.u.push(x * 0.1, z * 0.1);
+      mb.o.push(x * 1.0, y * 1.0, z * 1.0);      // 地面噪声用世界坐标
+      mb.c.push(1, 1, 1);
+    }
+  }
+  for (let r = 0; r < RINGS; r++) {
+    for (let s = 0; s < SEGS; s++) {
+      const a = r * (SEGS + 1) + s, b = a + 1, c = a + SEGS + 1, d = c + 1;
+      mb.i.push(a, c, b, b, c, d);
+    }
+  }
+  return mb;
+}
+
+/* 堆石 */
+function buildRocks() {
+  const mb = MB();
+  const spots = [[-5.6, 4.6], [6.4, 5.2], [-7.8, -3.4], [7.2, -2.2], [-9.5, 1.2], [9.8, 0.4]];
+  for (const [bx, bz] of spots) {
+    const y = groundHeight(bx, bz);
+    const n = 3 + Math.floor(rnd() * 4);
+    for (let i = 0; i < n; i++) {
+      const s = 0.26 + rnd() * 0.5;
+      addGeo(mb, geoSphere(1, 7, 5),
+        M4.trs([bx + rr(-0.5, 0.5), y + s * 0.42, bz + rr(-0.5, 0.5)],
+          [rr(0, 3), rr(0, 3), rr(0, 3)], [s * 1.25, s * 0.72, s * 1.05]), [1, 1, 1]);
+    }
+  }
+  return mb;
+}
+
+/* 针叶树：树干 + 多层锥形树冠 */
+function makePineGeo(color) {
+  const c = color || pineColor();
+  const trunk = geoCylinder(0.30, 0.16, 6.4, 8, false);
+  const canopy = MB();
+  const layers = 4;
+  for (let i = 0; i < layers; i++) {
+    const t = i / (layers - 1);
+    const r = 2.15 * (1 - t * 0.74);
+    const h = 2.5 * (1 - t * 0.32);
+    const y = 1.9 + t * 3.5;
+    const cc = [c[0] * rr(0.82, 1.15), c[1] * rr(0.82, 1.15), c[2] * rr(0.82, 1.15)];
+    addGeo(canopy, geoCone(r, h, 9),
+      M4.trs([rr(-0.06, 0.06), y, rr(-0.06, 0.06)], [0, rr(0, 6.28), 0], [1, 1, 1]), cc);
+  }
+  return { trunk, canopy };
+}
+/* 阔叶树：树干 + 数个不规则球冠 */
+function makeBroadGeo(color) {
+  const c = color || broadColor();
+  const trunk = geoCylinder(0.34, 0.20, 5.2, 8, false);
+  const canopy = MB();
+  const blobs = 6;
+  for (let i = 0; i < blobs; i++) {
+    const s = 1.15 + rnd() * 0.95;
+    const cc = [c[0] * rr(0.82, 1.15), c[1] * rr(0.82, 1.15), c[2] * rr(0.82, 1.15)];
+    addGeo(canopy, geoSphere(1, 8, 6),
+      M4.trs([rr(-1.5, 1.5), 4.3 + rr(-0.9, 1.4), rr(-1.5, 1.5)], [rr(0, 3), rr(0, 3), rr(0, 3)],
+        [s, s * 0.86, s]), cc);
+  }
+  return { trunk, canopy };
+}
+function pineColor() {
+  const g = rr(0.20, 0.28);
+  return [g * 0.62, g * 1.18, g * 0.66];
+}
+function broadColor() {
+  const g = rr(0.22, 0.30);
+  return [g * 1.08, g * 1.18, g * 0.60];
+}
+
+/* 草簇 */
+function makeGrassGeo() {
+  const mb = MB();
+  const blades = 7;
+  for (let i = 0; i < blades; i++) {
+    const a = i / blades * Math.PI * 2 + rr(-0.2, 0.2);
+    const h = 0.26 + rnd() * 0.34;
+    const lean = rr(0.08, 0.34);
+    const gm = {
+      pos: [-0.035, 0, 0, 0.035, 0, 0, lean, h, 0],
+      nrm: [0, 0.4, 1, 0, 0.4, 1, 0, 0.4, 1],
+      uv: [0, 0, 1, 0, 0.5, 1],
+      idx: [0, 1, 2]
+    };
+    addGeo(mb, gm, M4.trs([Math.cos(a) * 0.06, 0, Math.sin(a) * 0.06], [0, -a, 0], [1, 1, 1]), [1, 1, 1]);
+  }
+  return mb;
+}
+
+/* ============================== 场景装配 ============================== */
+document.getElementById('loader').querySelector('.lt').textContent = '正在搭建小屋';
+
+const cabinMB = buildCabin();
+const foxMB = buildFox();
+const interiorMB = buildInterior();
+const terrainMB = buildTerrain();
+const rockMB = buildRocks();
+const grassGeo = makeGrassGeo();
+const pineGeo = makePineGeo();
+const broadGeo = makeBroadGeo();
+
+/* 小径：深色泥土条带（贴地，略有起伏） */
+const pathMB = MB();
+(function buildPath() {
+  const N = 46;
+  for (let i = 0; i < N; i++) {
+    const t0 = i / N, t1 = (i + 1) / N;
+    const z0 = 4.2 + t0 * 26, z1 = 4.2 + t1 * 26;
+    const c0 = Math.sin(t0 * 2.4) * 2.2 + t0 * 1.4;
+    const c1 = Math.sin(t1 * 2.4) * 2.2 + t1 * 1.4;
+    const w0 = 0.95 + t0 * 1.4, w1 = 0.95 + t1 * 1.4;
+    const g = { pos: [], nrm: [], uv: [], idx: [] };
+    const pts = [[c0 - w0, z0], [c0 + w0, z0], [c1 + w1, z1], [c1 - w1, z1]];
+    for (const [x, z] of pts) {
+      const y = groundHeight(x, z) + 0.035;
+      g.pos.push(x, y, z); g.nrm.push(0, 1, 0); g.uv.push(x * 0.2, z * 0.2);
+    }
+    g.idx = [0, 1, 2, 0, 2, 3];
+    addGeo(pathMB, g, M4.trs([0, 0, 0], [0, 0, 0], [1, 1, 1]), [1, 1, 1], 0.8);
+  }
+  // 路面两侧落叶
+  for (let i = 0; i < 160; i++) {
+    const t = rnd();
+    const z = 4.6 + t * 24;
+    const cx = Math.sin(t * 2.4) * 2.2 + t * 1.4;
+    const x = cx + rr(-2.6, 2.6);
+    if (Math.abs(x - cx) < 1.1) continue;
+    const y = groundHeight(x, z) + 0.03;
+    addGeo(pathMB, geoSphere(1, 5, 3),
+      M4.trs([x, y, z], [rr(0, 3), rr(0, 6.28), rr(0, 3)], [0.07, 0.02, 0.05]),
+      [rr(0.25, 0.42), rr(0.18, 0.30), rr(0.08, 0.16)], 3.0);
+  }
+})();
+
+/* 树木实例数据 */
+document.getElementById('loader').querySelector('.lt').textContent = '正在播种森林';
+const treeInst = [];
+const CAM_START = [4.0, 2.55, 11.2];
+let attempts = 0;
+while (treeInst.length < 205 && attempts < 9000) {
+  attempts++;
+  const a = rnd() * Math.PI * 2;
+  const rad = 8.0 + Math.pow(rnd(), 0.62) * 62;
+  const x = Math.cos(a) * rad, z = Math.sin(a) * rad - 1.0;
+  // 空地
+  if (Math.hypot(x, z - 0.5) < 10.5) continue;
+  // 相机附近留空
+  if (Math.hypot(x - CAM_START[0], z - CAM_START[2]) < 7.5) continue;
+  // 小径留空
+  if (pathFactor(x, z) > 0.45 && z > 2.5) continue;
+  const y = groundHeight(x, z);
+  const broad = rnd() < 0.34;
+  const s = rr(0.75, 1.45) * (rad > 40 ? 1.15 : 1.0);
+  treeInst.push({ x, y, z, s, broad, rot: rr(0, 6.28), c: rnd() });
+}
+/* 近景侧翼树（构图用，手工摆几棵避免遮挡又保证画框） */
+[[-10.2, -2.0], [10.5, -4.5], [-12.4, 3.6], [12.8, 2.2], [-8.6, -9.0], [9.2, -9.5]].forEach(([x, z]) => {
+  treeInst.push({ x, y: groundHeight(x, z), z, s: 1.35, broad: false, rot: rr(0, 6.28), c: 0.5 });
+});
+
+/* 草实例 */
+const grassInst = [];
+for (let i = 0; i < 2800; i++) {
+  const a = rnd() * Math.PI * 2;
+  const rad = 2.5 + Math.pow(rnd(), 0.7) * 30;
+  const x = Math.cos(a) * rad, z = Math.sin(a) * rad - 0.5;
+  if (Math.hypot(x, z - 0.5) < 3.4) continue;
+  if (pathFactor(x, z) > 0.7) continue;
+  grassInst.push([x, groundHeight(x, z), z]);
+}
+
+/* ------------------------------ 上传几何 ------------------------------ */
+const meshes = [];
+function pushMesh(mb, mat, model, opts) {
+  if (mb.i.length === 0) return;
+  meshes.push(Object.assign({
+    mesh: uploadMesh(mb), mat, model: model || M4.ident(),
+    instanced: 0, count: 1, shadow: true, sway: 0
+  }, opts || {}));
+}
+/* 为实例化网格构建实例矩阵缓冲（aInst = location 5..8） */
+function attachInstances(meshEntry, list) {
+  const vao = meshEntry.mesh.vao;
+  gl.bindVertexArray(vao);
+  const data = new Float32Array(list.length * 16);
+  list.forEach((t, i) => {
+    const m = M4.trs([t.x, t.y, t.z], [0, t.rot !== undefined ? t.rot : (t.rotY || 0), 0], [t.s, t.s, t.s]);
+    data.set(m, i * 16);
+  });
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  for (let k = 0; k < 4; k++) {
+    const loc = 5 + k;
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 64, k * 16);
+    gl.vertexAttribDivisor(loc, 1);
+  }
+  gl.bindVertexArray(null);
+  meshEntry.instBuf = buf;
+  return meshEntry;
+}
+pushMesh(terrainMB, MAT.GROUND, M4.ident(), { shadow: false });
+pushMesh(pathMB, 8, M4.ident(), { shadow: false });
+pushMesh(rockMB, MAT.STONE, M4.ident(), { outline: false, shadow: false });
+pushMesh(cabinMB.wood, MAT.WOOD, M4.ident(), { outline: true });
+pushMesh(cabinMB.stone, MAT.STONE, M4.ident(), { outline: true });
+pushMesh(cabinMB.emissive, MAT.EMISSIVE, M4.ident(), { shadow: false });
+pushMesh(foxMB.fur, MAT.CLOTH, M4.ident(), { outline: false });
+pushMesh(foxMB.light, MAT.CLOTH, M4.ident(), { outline: false });
+pushMesh(foxMB.dark, MAT.CLOTH, M4.ident(), { outline: false });
+  pushMesh(foxMB.wood, MAT.WOOD, M4.ident(), { outline: false });
+pushMesh(interiorMB.wood, MAT.WOOD, M4.ident(), { shadow: false });
+pushMesh(interiorMB.dark, MAT.WOOD, M4.ident(), { shadow: false });
+pushMesh(interiorMB.stone, MAT.STONE, M4.ident(), { shadow: false });
+pushMesh(interiorMB.cloth, MAT.CLOTH, M4.ident(), { shadow: false });
+pushMesh(interiorMB.metal, MAT.STONE, M4.ident(), { shadow: false });
+pushMesh(interiorMB.lamp, MAT.EMISSIVE, M4.ident(), { shadow: false });
+
+
+/* 树干：合批（两种树型共用同一个树干几何，视觉差异由树冠承担） */
+(function batchTrunks() {
+  const mb = MB();
+  const pine = geoCylinder(0.30, 0.16, 6.4, 8, false);
+  const broad = geoCylinder(0.34, 0.20, 5.2, 8, false);
+  for (const t of treeInst) {
+    addGeo(mb, t.broad ? broad : pine,
+      M4.trs([t.x, t.y, t.z], [0, t.rot, 0], [t.s, t.s, t.s]), [1.0, 1.0, 1.0]);
+  }
+  pushMesh(mb, MAT.BARK, M4.ident(), { outline: true });
+})();
+/* 树冠：实例化（实例矩阵就是对应树干的位置/旋转/缩放） */
+(function setupCanopy() {
+  const pineInst = treeInst.filter(t => !t.broad).map(t => ({ x: t.x, y: t.y, z: t.z, rot: t.rot, s: t.s }));
+  const broadInst = treeInst.filter(t => t.broad).map(t => ({ x: t.x, y: t.y, z: t.z, rot: t.rot, s: t.s }));
+  const e1 = attachInstances({
+    mesh: uploadMesh(pineGeo.canopy), mat: MAT.LEAF, model: M4.ident(), instanced: 1,
+    count: pineInst.length, shadow: true, sway: 1, data: pineInst, kind: 'pine', outline: true
+  }, pineInst);
+  const e2 = attachInstances({
+    mesh: uploadMesh(broadGeo.canopy), mat: MAT.LEAF, model: M4.ident(), instanced: 1,
+    count: broadInst.length, shadow: true, sway: 1, data: broadInst, kind: 'broad', outline: true
+  }, broadInst);
+  meshes.push(e1, e2);
+})();
+/* 草：实例化 */
+(function setupGrass() {
+  const list = grassInst.map(g => ({ x: g[0], y: g[1], z: g[2], rot: (g[0] * 1.7 + g[2] * 2.3) % 6.283, s: 0.75 + ((g[0] * 13.7 + g[2] * 7.1) % 1) * 0.7 }));
+  const e = attachInstances({
+    mesh: uploadMesh(grassGeo), mat: MAT.LEAF, model: M4.ident(), instanced: 1,
+    count: list.length, shadow: false, sway: 1, grass: true, data: list
+  }, list);
+  meshes.push(e);
+})();
+
+/* ------------------------------ 粒子 ------------------------------ */
+document.getElementById('loader').querySelector('.lt').textContent = '正在点亮萤火';
+const particleData = [];
+// 萤火虫
+for (let i = 0; i < 46; i++) {
+  const a = rnd() * Math.PI * 2, rad = rr(4, 16);
+  particleData.push({
+    x: Math.cos(a) * rad, y: rr(0.7, 3.4), z: Math.sin(a) * rad - 1.0,
+    r: rr(0.95, 1.0), g: rr(0.72, 0.92), b: rr(0.22, 0.45),
+    size: rr(9, 20), phase: rr(0, 6.28), speed: rr(0.25, 0.6), type: 1
+  });
+}
+// 尘埃（逆光中的漂浮颗粒）
+for (let i = 0; i < 260; i++) {
+  const a = rnd() * Math.PI * 2, rad = Math.pow(rnd(), 0.7) * rr(2, 13);
+  particleData.push({
+    x: Math.cos(a) * rad, y: rr(0.4, 5.5), z: Math.sin(a) * rad - 0.5,
+    r: 0.95, g: 0.90, b: 0.78,
+    size: rr(2.2, 5.5), phase: rr(0, 6.28), speed: rr(0.06, 0.2), type: 0
+  });
+}
+const particlesGeo = (function () {
+  const g = { pos: [], col: [], meta: [] };
+  particleData.forEach(p => {
+    g.pos.push(p.x, p.y, p.z);
+    g.col.push(p.r, p.g, p.b);
+    g.meta.push(p.size, p.phase, p.speed, p.type);
+  });
+  return g;
+})();
+
+/* ------------------------------ 渲染目标 ------------------------------ */
+const TEX_MAX = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+const SHADOW_SIZE = Math.min(2048, TEX_MAX);
+const fboExt = gl.getExtension('EXT_color_buffer_float');
+const HDR_FMT = fboExt ? gl.RGBA16F : gl.RGBA8;
+
+function makeRT(w, h, fmt, withDepth) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, fmt, w, h, 0, gl.RGBA, fmt === gl.RGBA16F ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  let depth = null;
+  if (withDepth) {
+    depth = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+  }
+  const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  if (status !== gl.FRAMEBUFFER_COMPLETE) throw new Error('帧缓冲不完整: 0x' + status.toString(16));
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { tex, fbo, w, h, fmt, depth };
+}
+/* 阴影贴图（注意：COMPARE_MODE 必须在挂上 FBO 之后再设置，
+   否则 WebKit 会判定深度附件不合法，导致整个 FBO 不完整 → 一切几何绘制 1282 被丢弃） */
+const shadowRT = (function () {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, SHADOW_SIZE, SHADOW_SIZE, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, tex, 0);
+  gl.drawBuffers([gl.NONE]);
+  gl.readBuffer(gl.NONE);
+  const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  const valid = (st === gl.FRAMEBUFFER_COMPLETE);
+  // 说明：这里刻意 *不* 开启 TEXTURE_COMPARE_MODE。
+  // 带比较模式的深度纹理在 SChromium 可以当附件，但在 WebKit/部分驱动上会被判为不完整，
+  // 一旦 FBO 不完整，所有几何绘制都会 1282 被丢弃（本项目已踩过这个坑）。
+  // 阴影采样用的是普通 sampler2D + 手动 3x3 PCF（step 比较），无需比较采样器。
+  return { tex, fbo, valid, status: st };
+})();
+
+/* 全屏三角形 */
+const fsVAO = (function () {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const b = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+  return vao;
+})();
+/* 粒子 VAO */
+const particlesVAO = (function () {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const b1 = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b1);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(particlesGeo.pos), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0);
+  const b2 = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b2);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(particlesGeo.col), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 12, 0);
+  const b3 = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b3);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(particlesGeo.meta), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 16, 0);
+  gl.bindVertexArray(null);
+  return vao;
+})();
+
+/* ============================== 相机与交互 ============================== */
+const cam = {
+  target: [0.0, 1.9, 0.6],
+  yaw: 0.42, pitch: 0.135, dist: 12.4,
+  fov: 40 * Math.PI / 180,
+  pos: [0, 0, 0]
+};
+const CAM_PRESETS = [
+  { name: '门廊 · 中景', target: [-0.4, 1.85, 1.1], yaw: 0.48, pitch: 0.145, dist: 10.6 },
+  { name: '全景 · 林间', target: [0.0, 2.4, 0.0], yaw: 0.95, pitch: 0.175, dist: 19.0 },
+  { name: '近景 · 读书', target: [-1.7, 1.45, 2.9], yaw: 0.22, pitch: 0.085, dist: 5.4 },
+  { name: '低角 · 屋脊', target: [0.6, 2.2, 0.0], yaw: -0.55, pitch: 0.055, dist: 13.5 }
+];
+let presetIdx = 0;
+let autoDrift = true;
+let driftPhase = 0;
+let dragging = false, lastX = 0, lastY = 0, idleTimer = 0;
+let paused = false;
+
+canvas.style.cursor = 'grab';
+canvas.addEventListener('pointerdown', e => {
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  canvas.style.cursor = 'grabbing';
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const dx = (e.clientX - lastX) / window.innerWidth;
+  const dy = (e.clientY - lastY) / window.innerHeight;
+  lastX = e.clientX; lastY = e.clientY;
+  cam.yaw -= dx * 2.4;
+  cam.pitch = Math.max(-0.15, Math.min(0.72, cam.pitch + dy * 1.5));
+  autoDrift = false; idleTimer = 0;
+});
+const endDrag = () => { dragging = false; canvas.style.cursor = 'grab'; };
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+canvas.addEventListener('pointerleave', endDrag);
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  cam.dist = Math.max(3.2, Math.min(34, cam.dist * (1 + Math.sign(e.deltaY) * 0.075)));
+  autoDrift = false; idleTimer = 0;
+}, { passive: false });
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === ' ') { paused = !paused; e.preventDefault(); }
+  if (k === 'h') {
+    document.getElementById('ui').classList.toggle('hide');
+  }
+  if (k === 'f') {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => { });
+    else document.exitFullscreen().catch(() => { });
+  }
+  if (k >= '1' && k <= '4') {
+    const i = parseInt(k, 10) - 1;
+    presetIdx = i;
+    const p = CAM_PRESETS[i];
+    cam.target = p.target.slice();
+    cam.yaw = p.yaw; cam.pitch = p.pitch; cam.dist = p.dist;
+    autoDrift = true; idleTimer = 99;
+  }
+  if (k === 'p') { // 截图（下载当前帧）
+    try {
+      const a = document.createElement('a');
+      a.download = 'forest-cabin-' + Date.now() + '.png';
+      a.href = canvas.toDataURL('image/png');
+      a.click();
+    } catch (err) { console.warn(err); }
+  }
+});
+
+/* ============================== 渲染器 ============================== */
+const state = {
+  width: 0, height: 0, dpr: 1,
+  rtScene: null, rtBrightA: null, rtBrightB: null, rtComp: null,
+  time: 0, frames: 0, fps: 0, lastFpsT: 0, prevT: 0, qualityCap: 1.0, lowFrames: 0,
+  ready: false
+};
+let lightVP = M4.ident();
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+  const w = Math.floor(window.innerWidth * dpr);
+  const h = Math.floor(window.innerHeight * dpr);
+  if (w === state.width && h === state.height) return;
+  state.width = w; state.height = h; state.dpr = dpr;
+  canvas.width = w; canvas.height = h;
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  // 释放旧 RT
+  [state.rtScene, state.rtBrightA, state.rtBrightB, state.rtComp].forEach(rt => {
+    if (!rt) return;
+    gl.deleteTexture(rt.tex);
+    gl.deleteFramebuffer(rt.fbo);
+    if (rt.depth) gl.deleteRenderbuffer(rt.depth);
+  });
+  state.rtScene = makeRT(w, h, HDR_FMT, true);
+  const bw = Math.max(2, Math.floor(w / 4)), bh = Math.max(2, Math.floor(h / 4));
+  state.rtBrightA = makeRT(bw, bh, HDR_FMT, false);
+  state.rtBrightB = makeRT(bw, bh, HDR_FMT, false);
+  state.rtComp = makeRT(w, h, gl.RGBA8, false);
+}
+
+/* ---- 绘制辅助 ---- */
+function bindProgram(prog) {
+  gl.useProgram(prog.p);
+  return prog.uniforms;
+}
+function setTexture(prog, name, unit, tex, asShadow) {
+  const loc = prog.uniforms[name];
+  if (!loc) return;
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.uniform1i(loc, unit);
+}
+function drawFullscreen(prog) {
+  gl.bindVertexArray(fsVAO);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindVertexArray(null);
+}
+
+/* ---- 相机矩阵 ---- */
+function computeCamera() {
+  const yaw = cam.yaw + (cam.shakeX || 0);
+  const pitch = Math.max(-0.18, Math.min(0.8, cam.pitch + (cam.shakeY || 0)));
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const eye = [
+    cam.target[0] + cam.dist * cp * sy,
+    cam.target[1] + cam.dist * sp,
+    cam.target[2] + cam.dist * cp * cy
+  ];
+  const view = M4.lookAt(eye, cam.target, [0, 1, 0]);
+  const proj = M4.perspective(cam.fov, state.width / state.height, 0.1, 400);
+  cam.pos = eye;
+  return { view, proj, vp: M4.mul(proj, view), eye };
+}
+
+/* ---- 阴影矩阵 ---- */
+function computeLightVP() {
+  const center = [0, 1.2, 0];
+  const eye = [
+    center[0] + SUN_DIR[0] * 55,
+    center[1] + SUN_DIR[1] * 55,
+    center[2] + SUN_DIR[2] * 55
+  ];
+  const view = M4.lookAt(eye, center, [0, 1, 0]);
+  const proj = M4.ortho(-26, 26, -26, 26, 1, 110);
+  return M4.mul(proj, view);
+}
+
+/* ---- 投影到屏幕坐标（求太阳位置） ---- */
+function worldToScreen(p, vp) {
+  const x = p[0], y = p[1], z = p[2];
+  const cx = vp[0] * x + vp[4] * y + vp[8] * z + vp[12];
+  const cy2 = vp[1] * x + vp[5] * y + vp[9] * z + vp[13];
+  const cw = vp[3] * x + vp[7] * y + vp[11] * z + vp[15];
+  const w = cw === 0 ? 1e-5 : cw;
+  return [(cx / w) * 0.5 + 0.5, (cy2 / w) * 0.5 + 0.5, w];
+}
+
+/* ============================== 主循环 ============================== */
+const SUN_WORLD = [SUN_DIR[0] * 300, SUN_DIR[1] * 300, SUN_DIR[2] * 300];
+let fadeIn = 0;
+
+function drawScene(time, camData) {
+  const u = bindProgram(progMain);
+  gl.uniformMatrix4fv(u.uViewProj, false, camData.vp);
+  gl.uniformMatrix4fv(u.uLightVP, false, lightVP);
+  gl.uniform3fv(u.uSunDir, SUN_DIR);
+  gl.uniform3fv(u.uSunColor, SUN_COLOR);
+  gl.uniform3fv(u.uCamPos, camData.eye);
+  gl.uniform3fv(u.uLampPos, LAMP_POS);
+  gl.uniform3fv(u.uLampColor, LAMP_COLOR);
+  gl.uniform3fv(u.uWinPos, WIN_POS);
+  gl.uniform3fv(u.uWinColor, WIN_COLOR);
+  gl.uniform3fv(u.uFogColor, FOG_COLOR);
+  gl.uniform1f(u.uFogDensity, FOG_DENSITY);
+  gl.uniform1f(u.uShadowTexel, 1 / SHADOW_SIZE);
+  gl.uniform1f(u.uTime, time);
+  gl.uniform1f(u.uShadowOn, shadowRT.valid ? 1 : 0);
+  setTexture(progMain, 'uShadow', 0, shadowRT.tex, true);
+
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LEQUAL);
+  gl.disable(gl.CULL_FACE);
+  const drawList = meshes.filter(m => !m.instanced);
+  for (const m of drawList) {
+    gl.uniformMatrix4fv(u.uModel, false, m.model);
+    gl.uniform1i(u.uMat, m.mat);
+    gl.uniform1i(u.uUseColor, 1);
+    gl.uniform1i(u.uInstanced, 0);
+    gl.uniform1i(u.uSway, 0);
+    gl.bindVertexArray(m.mesh.vao);
+    gl.drawElements(gl.TRIANGLES, m.mesh.count, gl.UNSIGNED_INT, 0);
+    state.drawCmds++;
+  }
+  // 实例化：树冠（草叶走下面的 foliage 通道，这里跳过）
+  for (const m of meshes) {
+    if (!m.instanced || m.grass) continue;
+    if (NOINST) continue;
+    gl.uniformMatrix4fv(u.uModel, false, M4.ident());
+    gl.uniform1i(u.uMat, m.mat);
+    gl.uniform1i(u.uInstanced, 1);
+    gl.uniform1i(u.uSway, m.sway || 0);
+    gl.bindVertexArray(m.mesh.vao);
+    gl.drawElementsInstanced(gl.TRIANGLES, m.mesh.count, gl.UNSIGNED_INT, 0, Math.max(1, Math.floor(m.count * state.qualityCap)));
+    state.drawCmds++;
+  }
+  gl.bindVertexArray(null);
+
+  /* ---------- 卡通描边 Pass：只画背面，沿法线外扩 ---------- */
+  if (!NOINST) {
+    const uo = bindProgram(progOutline);
+    gl.uniformMatrix4fv(uo.uViewProj, false, camData.vp);
+    gl.uniform3fv(uo.uCamPos, camData.eye);
+    gl.uniform1f(uo.uWidth, 1.6 / state.height);   // 约 1.6 像素宽的轮廓
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.FRONT);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    for (const m of meshes) {
+      if (!m.outline) continue;
+      gl.uniformMatrix4fv(uo.uModel, false, m.model);
+      gl.uniform1i(uo.uInstanced, m.instanced ? 1 : 0);
+      gl.bindVertexArray(m.mesh.vao);
+      if (m.instanced) gl.drawElementsInstanced(gl.TRIANGLES, m.mesh.count, gl.UNSIGNED_INT, 0, Math.max(1, Math.floor(m.count * state.qualityCap)));
+      else gl.drawElements(gl.TRIANGLES, m.mesh.count, gl.UNSIGNED_INT, 0);
+      state.drawCmds++;
+    }
+    gl.bindVertexArray(null);
+    gl.cullFace(gl.BACK);
+    gl.disable(gl.CULL_FACE);
+  }
+
+  /* 草叶（使用 foliage 着色器，单向面片） */
+  const uf = bindProgram(progFoliage);
+  gl.uniformMatrix4fv(uf.uViewProj, false, camData.vp);
+  gl.uniformMatrix4fv(uf.uLightVP, false, lightVP);
+  gl.uniform3fv(uf.uSunDir, SUN_DIR);
+  gl.uniform3fv(uf.uSunColor, SUN_COLOR);
+  gl.uniform3fv(uf.uCamPos, camData.eye);
+  gl.uniform3fv(uf.uFogColor, FOG_COLOR);
+  gl.uniform3fv(uf.uWinPos, WIN_POS);
+  gl.uniform3fv(uf.uWinColor, WIN_COLOR);
+  gl.uniform1f(uf.uShadowTexel, 1 / SHADOW_SIZE);
+  gl.uniform1f(uf.uTime, time);
+  gl.uniform1f(uf.uFogDensity, FOG_DENSITY);
+  gl.uniform1f(uf.uTranslucency, 0.65);
+  gl.uniform1f(uf.uShadowOn, shadowRT.valid ? 1 : 0);
+  setTexture(progFoliage, 'uShadow', 0, shadowRT.tex, true);
+  const grassMesh = meshes.find(m => m.grass);
+  if (grassMesh && !NOINST) {
+    gl.uniformMatrix4fv(uf.uModel, false, M4.ident());
+    gl.uniform1i(uf.uInstanced, 1);
+    gl.disable(gl.CULL_FACE);
+    gl.bindVertexArray(grassMesh.mesh.vao);
+    gl.drawElementsInstanced(gl.TRIANGLES, grassMesh.mesh.count, gl.UNSIGNED_INT, 0, Math.max(1, Math.floor(grassMesh.count * state.qualityCap)));
+    state.drawCmds++;
+    gl.bindVertexArray(null);
+  }
+
+  /* 粒子（叠加混合） */
+  const up = bindProgram(progParticles);
+  gl.uniformMatrix4fv(up.uViewProj, false, camData.vp);
+  gl.uniform3fv(up.uCamPos, camData.eye);
+  gl.uniform1f(up.uTime, time);
+  gl.uniform1f(up.uPixelScale, state.height / (2 * Math.tan(cam.fov / 2)));
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE);
+  gl.depthMask(false);
+  gl.bindVertexArray(particlesVAO);
+  gl.drawArrays(gl.POINTS, 0, particleData.length);
+  state.drawCmds++;
+  gl.bindVertexArray(null);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
+function drawSky(camData, time) {
+  const u = bindProgram(progSky);
+  const fx = Math.cos(cam.yaw), fz = Math.sin(cam.yaw);
+  const dir = [fx * Math.cos(cam.pitch) * -1, -Math.sin(cam.pitch), fz * Math.cos(cam.pitch) * -1];
+  // 相机朝向：从 eye 指向 target
+  const fwd = V3.norm(V3.sub(cam.target, camData.eye));
+  const right = V3.norm(V3.cross(fwd, [0, 1, 0]));
+  const upv = V3.cross(right, fwd);
+  gl.uniform2f(u.uRes, state.width, state.height);
+  gl.uniform3fv(u.uCamDir, fwd);
+  gl.uniform3fv(u.uCamRight, right);
+  gl.uniform3fv(u.uCamUp, upv);
+  gl.uniform3fv(u.uSunDir, SUN_DIR);
+  gl.uniform3fv(u.uSunColor, SUN_COLOR);
+  gl.uniform1f(u.uTime, time);
+  gl.uniform3fv(u.uFogColor, FOG_COLOR);
+  gl.depthMask(false);
+  gl.disable(gl.DEPTH_TEST);
+  drawFullscreen(progSky);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+}
+
+function renderShadowPass() {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowRT.fbo);
+  gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LESS);
+  gl.disable(gl.CULL_FACE);
+  gl.enable(gl.POLYGON_OFFSET_FILL);
+  gl.polygonOffset(2.0, 4.0);
+  const u = bindProgram(progShadow);
+  gl.uniformMatrix4fv(u.uViewProj, false, lightVP);
+  for (const m of meshes) {
+    if (!m.shadow) continue;
+    gl.uniformMatrix4fv(u.uModel, false, m.model);
+    gl.uniform1i(u.uInstanced, m.instanced ? 1 : 0);
+    gl.bindVertexArray(m.mesh.vao);
+    if (m.instanced) gl.drawElementsInstanced(gl.TRIANGLES, m.mesh.count, gl.UNSIGNED_INT, 0, Math.max(1, Math.floor(m.count * state.qualityCap)));
+    else gl.drawElements(gl.TRIANGLES, m.mesh.count, gl.UNSIGNED_INT, 0);
+  }
+  gl.bindVertexArray(null);
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+const GL_ERR_TAG = { 0x0500: 'INVALID_ENUM', 0x0501: 'INVALID_VALUE', 0x0502: 'INVALID_OPERATION', 0x0505: 'OUT_OF_MEMORY', 0x0506: 'INVALID_FRAMEBUFFER_OPERATION' };
+function glCheck(tag) {
+  const e = gl.getError();
+  if (e && e !== 0) {
+    state.lastGLerr = (GL_ERR_TAG[e] || ('0x' + e.toString(16))) + (tag ? (' @ ' + tag) : '');
+    if (!state.errLogged) { console.error('WebGL error:', state.lastGLerr); state.errLogged = true; }
+  }
+}
+
+function renderFrame(now) {
+  if (!state.ready) return;
+  state.time = now / 1000;
+  const time = state.time;
+
+  /* 相机自动漂移（鼠标静止 3.5 秒后回归）——按时间增量累加，幅度可见但不抢戏 */
+  const dt = Math.min(0.1, Math.max(0.001, (state.prevT ? time - state.prevT : 1 / 60)));
+  state.prevT = time;
+  if (!dragging) {
+    idleTimer += dt;
+    if (idleTimer > 3.5) autoDrift = true;
+  } else {
+    idleTimer = 0;
+  }
+  if (autoDrift && !paused) {
+    driftPhase = time;
+    cam.yaw += Math.sin(time * 0.11) * 0.0007;
+    cam.pitch = Math.max(0.06, Math.min(0.40, cam.pitch + Math.sin(time * 0.07 + 1.2) * 0.00035));
+  }
+  /* 呼吸感：极轻的手持抖动（不累积，用正弦偏置） */
+  const shakeX = Math.sin(time * 0.62) * 0.0011 + Math.sin(time * 1.77) * 0.0004;
+  const shakeY = Math.cos(time * 0.51) * 0.0009 + Math.cos(time * 2.13) * 0.0003;
+  cam.shakeX = shakeX; cam.shakeY = shakeY;
+  cam.target[1] = 1.9 + Math.sin(time * 0.19) * 0.012;
+
+  const camData = computeCamera();
+  lightVP = computeLightVP();
+
+  /* 1. 阴影（帧缓冲不完整时跳过，改用无阴影光照，绝不能阻断主场景） */
+  if (shadowRT.valid && !NOSHADOW) renderShadowPass();
+
+  /* 2. 场景 → HDR RT */
+  gl.bindFramebuffer(gl.FRAMEBUFFER, state.rtScene.fbo);
+  gl.viewport(0, 0, state.rtScene.w, state.rtScene.h);
+  gl.clearColor(0.02, 0.03, 0.04, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  drawSky(camData, time);
+  drawScene(time, camData);
+
+  glCheck("scene");
+  /* 3. 泛光：提取 + 横向模糊 + 纵向模糊 */
+  gl.disable(gl.DEPTH_TEST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, state.rtBrightA.fbo);
+  gl.viewport(0, 0, state.rtBrightA.w, state.rtBrightA.h);
+  const ub = bindProgram(progBright);
+  setTexture(progBright, 'uTex', 0, state.rtScene.tex);
+  gl.uniform2f(ub.uTexel, 1 / state.rtScene.w, 1 / state.rtScene.h);
+  gl.uniform1f(ub.uThreshold, 0.85);
+  gl.uniform1f(ub.uKnee, 0.45);
+  drawFullscreen(progBright);
+
+  glCheck("bright");
+  const ubl = bindProgram(progBlur);
+  setTexture(progBlur, 'uTex', 0, state.rtBrightA.tex);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, state.rtBrightB.fbo);
+  gl.viewport(0, 0, state.rtBrightB.w, state.rtBrightB.h);
+  gl.uniform2f(ubl.uDir, 1, 0);
+  gl.uniform2f(ubl.uTexel, 1 / state.rtBrightA.w, 1 / state.rtBrightA.h);
+  drawFullscreen(progBlur);
+  setTexture(progBlur, 'uTex', 0, state.rtBrightB.tex);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, state.rtBrightA.fbo);
+  gl.viewport(0, 0, state.rtBrightA.w, state.rtBrightA.h);
+  gl.uniform2f(ubl.uDir, 0, 1);
+  gl.uniform2f(ubl.uTexel, 1 / state.rtBrightB.w, 1 / state.rtBrightB.h);
+  drawFullscreen(progBlur);
+
+  /* 4. 合成（场景 + 泛光 + 调色 + 暗角 + 颗粒）→ 中间缓冲 */
+  gl.bindFramebuffer(gl.FRAMEBUFFER, state.rtComp.fbo);
+  gl.viewport(0, 0, state.rtComp.w, state.rtComp.h);
+  const uc = bindProgram(progComposite);
+  setTexture(progComposite, 'uScene', 0, state.rtScene.tex);
+  setTexture(progComposite, 'uBloom', 1, state.rtBrightA.tex);
+  gl.uniform2f(uc.uRes, state.rtComp.w, state.rtComp.h);
+  gl.uniform1f(uc.uTime, time);
+  gl.uniform1f(uc.uExposure, EXPOSURE);
+  gl.uniform1f(uc.uBloomStrength, 0.22);
+  gl.uniform1f(uc.uVignette, 0.26);
+  gl.uniform1f(uc.uGrain, 0.012);
+  gl.uniform1f(uc.uGradeCool, 1.0);
+  gl.uniform1f(uc.uGradeWarm, 0.60);
+  gl.uniform3fv(uc.uSunColor, SUN_COLOR);
+  drawFullscreen(progComposite);
+
+  glCheck("composite-rt");
+  /* 5. 上屏（中间缓冲已调色，不再重复调色） */
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, state.width, state.height);
+  gl.disable(gl.DEPTH_TEST);
+  const uc2 = bindProgram(progComposite);
+  setTexture(progComposite, 'uScene', 0, state.rtComp.tex);
+  setTexture(progComposite, 'uBloom', 1, state.rtBrightA.tex);
+  gl.uniform2f(uc2.uRes, state.width, state.height);
+  gl.uniform1f(uc2.uTime, time);
+  gl.uniform1f(uc2.uExposure, 1.0);
+  gl.uniform1f(uc2.uBloomStrength, 0.05);
+  gl.uniform1f(uc2.uVignette, 0.0);
+  gl.uniform1f(uc2.uGrain, 0.0);
+  gl.uniform1f(uc2.uGradeCool, 1.0);
+  gl.uniform1f(uc2.uGradeWarm, 0.0);
+  drawFullscreen(progComposite);
+  glCheck("composite-screen");
+  gl.enable(gl.DEPTH_TEST);
+
+  /* 6. 太阳光束（屏幕空间径向模糊，采样中间缓冲，叠加到画布） */
+  const sunScreen = worldToScreen(SUN_WORLD, camData.vp);
+  if (sunScreen[2] > 0) {
+    const offX = sunScreen[0], offY = sunScreen[1];
+    const dd = Math.max(Math.abs(offX - 0.5) * 1.0, Math.abs(offY - 0.5) * 1.0);
+    const strength = Math.max(0, 1.0 - dd * 1.35);
+    if (strength > 0.02) {
+      gl.disable(gl.DEPTH_TEST);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      const ur = bindProgram(progRays);
+      setTexture(progRays, 'uTex', 0, state.rtComp.tex);
+      gl.uniform2f(ur.uSunUV, offX, offY);
+      gl.uniform1f(ur.uAspect, state.width / state.height);
+      gl.uniform3f(ur.uSunColor,
+        SUN_COLOR[0] * strength * 0.55,
+        SUN_COLOR[1] * strength * 0.55,
+        SUN_COLOR[2] * strength * 0.55);
+      drawFullscreen(progRays);
+      gl.disable(gl.BLEND);
+      gl.enable(gl.DEPTH_TEST);
+    }
+  }
+
+  /* 入场淡入 */
+  if (fadeIn < 1) {
+    fadeIn = Math.min(1, fadeIn + 0.012);
+    canvas.style.filter = 'brightness(' + (0.25 + 0.75 * fadeIn) + ')';
+    if (fadeIn >= 1) canvas.style.filter = 'none';
+  }
+
+  /* 计数 */
+  state.frames++;
+  state.drawCmds = 0;
+  const e1 = gl.getError();
+  if (e1 !== gl.NO_ERROR && e1 !== 0) {
+    state.lastGLerr = e1;
+    if (!state.errLogged) { console.error('WebGL error 0x' + e1.toString(16)); state.errLogged = true; }
+  }
+  if (time - state.lastFpsT > 1) {
+    state.fps = state.frames / (time - state.lastFpsT + 0.0001);
+    state.frames = 0; state.lastFpsT = time;
+    /* 自适应：帧率持续偏低时降低实例数量（不影响几何与光照质量） */
+    if (state.fps < 32 && state.qualityCap > 0.45) {
+      state.qualityCap = Math.max(0.45, state.qualityCap - 0.12);
+    } else if (state.fps > 56 && state.qualityCap < 1.0) {
+      state.qualityCap = Math.min(1.0, state.qualityCap + 0.03);
+    }
+    {
+      diag(glInfo.concat([
+        'FPS: ' + state.fps.toFixed(1) + '  drawCmds: ' + state.drawCmds,
+        'Draw meshes: ' + meshes.length,
+        'Trees: ' + treeInst.length + '  Grass: ' + grassInst.length,
+        'Particles: ' + particleData.length,
+        'Camera: ' + JSON.stringify(cam.pos.map(v => +v.toFixed(2))),
+'曝光: ' + EXPOSURE.toFixed(2) + '  阴影: ' + (shadowRT.valid && !NOSHADOW ? 'on' : 'off') + '  描边: ' + (NOOUTLINE ? 'off' : 'on') + '  HDR: ' + (HDR_FMT === gl.RGBA16F) + '  qualityCap: ' + state.qualityCap.toFixed(2) + '  GLerr: ' + (state.lastGLerr || 'none')
+      ]));
+    }
+  }
+}
+
+/* ============================== 启动 ============================== */
+resize();
+window.addEventListener('resize', resize);
+state.ready = true;
+
+function loop(now) {
+  try {
+    renderFrame(now);
+  } catch (e) {
+    fatal('渲染循环异常：' + (e && e.stack ? e.stack : e));
+    return;
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* 加载完成 */
+setTimeout(() => {
+  document.getElementById('loader').classList.add('gone');
+  setTimeout(() => { document.getElementById('loader').style.display = 'none'; }, 1200);
+}, 260);
+
+if (!FREEZE) {
+  setTimeout(() => { document.getElementById('ui').classList.add('hide'); }, 9000);
+}
+</script>
+</body>
+</html>
+
